@@ -4,6 +4,15 @@ server:
 spring:
   application:
     name: assistant-mcp-server
+  ai:
+    mcp:
+      server:
+        name: wuji-mcp-server
+        version: 1.0.0
+        type: SYNC
+        instructions: "Wuji assistant MCP sample tools (echo_ping, get_weather)"
+        capabilities:
+          tool: true
 
 logging:
   level:

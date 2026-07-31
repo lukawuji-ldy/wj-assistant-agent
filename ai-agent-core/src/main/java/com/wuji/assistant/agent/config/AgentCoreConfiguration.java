@@ -10,6 +10,12 @@ import org.springframework.context.annotation.Configuration;
  * @author liudy
  */
 @Configuration
-@EnableConfigurationProperties({WujiModelProperties.class, WujiAgentProperties.class})
+@EnableConfigurationProperties({
+        WujiModelProperties.class,
+        WujiAgentProperties.class,
+        WujiMcpProperties.class,
+        WujiRagProperties.class,
+        WujiMemoryProperties.class
+})
 public class AgentCoreConfiguration {
 }

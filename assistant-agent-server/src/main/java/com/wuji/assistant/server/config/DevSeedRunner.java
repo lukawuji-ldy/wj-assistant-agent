@@ -34,6 +34,7 @@ public class DevSeedRunner implements ApplicationRunner {
         seedUser();
         seedLlm();
         seedPrompt();
+        seedRagSample();
     }
 
     private void seedUser() {
@@ -58,22 +59,27 @@ public class DevSeedRunner implements ApplicationRunner {
     }
 
     private void seedLlm() {
+        Timestamp now = Timestamp.from(Instant.now());
+        seedLlmRow(1L, "llm_primary", "默认主模型", now);
+        seedLlmRow(2L, "llm_backup_1", "备用模型占位", now);
+    }
+
+    private void seedLlmRow(long id, String configId, String name, Timestamp now) {
         Integer cnt = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM llm_config WHERE config_id = ?", Integer.class, "llm_primary");
+                "SELECT COUNT(*) FROM llm_config WHERE config_id = ?", Integer.class, configId);
         if (cnt != null && cnt > 0) {
             return;
         }
-        Timestamp now = Timestamp.from(Instant.now());
         jdbcTemplate.update("""
                 INSERT INTO llm_config
                 (id, config_id, name, provider, base_url, api_key_cipher, model, temperature, max_tokens,
                  extra_json, status, create_time, update_time)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}'::jsonb, ?, ?, ?)
                 """,
-                1L, "llm_primary", "默认主模型", "openai_compatible",
+                id, configId, name, "openai_compatible",
                 "https://api.openai.com/v1", "CHANGE_ME", "gpt-4o-mini",
                 0.70, 4096, "ACTIVE", now, now);
-        log.info("seeded llm_config llm_primary; set WUJI_LLM_API_KEY or update api_key_cipher");
+        log.info("seeded llm_config {}; set WUJI_LLM_API_KEY or update api_key_cipher", configId);
     }
 
     private void seedPrompt() {
@@ -97,5 +103,41 @@ public class DevSeedRunner implements ApplicationRunner {
                 2L, "agent.default.user", "默认用户提示词模板", "USER",
                 "{{message}}", 1, "ACTIVE", now, now);
         log.info("seeded prompt_template defaults");
+    }
+
+    private void seedRagSample() {
+        Integer cnt = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM kb_document WHERE doc_id = ?", Integer.class, "doc_leave_policy");
+        if (cnt != null && cnt > 0) {
+            return;
+        }
+        Timestamp now = Timestamp.from(Instant.now());
+        jdbcTemplate.update("""
+                INSERT INTO kb_document
+                (id, doc_id, collection, title, current_version_id, create_time, update_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                100L, "doc_leave_policy", "kb_default", "Employee Leave Policy", 1001L, now, now);
+        jdbcTemplate.update("""
+                INSERT INTO kb_document_version
+                (id, doc_id, version, status, source, acl_roles, published_at, create_time, update_time)
+                VALUES (?, ?, ?, ?, ?, '["admin","user"]'::jsonb, ?, ?, ?)
+                """,
+                1001L, "doc_leave_policy", "v1", "ACTIVE", "seed://leave-policy", now, now, now);
+        jdbcTemplate.update("""
+                INSERT INTO vector_store (id, content, metadata, embedding)
+                VALUES (?::uuid, ?, ?::jsonb, NULL)
+                """,
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee1",
+                "Employees may take annual leave up to 15 days per year. Submit requests in HR portal at least 3 days in advance.",
+                "{\"doc_id\":\"doc_leave_policy\",\"version\":1,\"section\":\"annual\",\"chunk_id\":\"c1\",\"status\":\"ACTIVE\",\"collection\":\"kb_default\"}");
+        jdbcTemplate.update("""
+                INSERT INTO vector_store (id, content, metadata, embedding)
+                VALUES (?::uuid, ?, ?::jsonb, NULL)
+                """,
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee2",
+                "Sick leave requires a medical certificate when absence exceeds 2 consecutive working days.",
+                "{\"doc_id\":\"doc_leave_policy\",\"version\":1,\"section\":\"sick\",\"chunk_id\":\"c2\",\"status\":\"ACTIVE\",\"collection\":\"kb_default\"}");
+        log.info("seeded kb sample doc_leave_policy + vector_store chunks (embedding null; keyword retrieval MVP)");
     }
 }

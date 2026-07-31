@@ -22,6 +22,15 @@ spring:
       - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioSpeechAutoConfiguration
       - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioTranscriptionAutoConfiguration
       - org.springframework.ai.model.openai.autoconfigure.OpenAiModerationAutoConfiguration
+  ai:
+    mcp:
+      client:
+        enabled: ${wuji.mcp.enabled:true}
+        request-timeout: 20s
+        sse:
+          connections:
+            wuji-mcp:
+              url: ${wuji.mcp.server-url:http://127.0.0.1:8081}
 
 management:
   endpoints:
@@ -37,15 +46,46 @@ wuji:
       issuer: wuji-assistant
   model:
     primary-config-id: llm_primary
+    fallback-config-ids:
+      - llm_backup_1
+    retry:
+      max-attempts: 3
+      backoff: 1s
+    rate-limit-codes: [429]
     api-key-override: ${WUJI_LLM_API_KEY:}
   agent:
+    id: default
+    max-tool-rounds: 8
+    max-model-calls: 16
     system-prompt-code: agent.default.system
     user-prompt-code: agent.default.user
     memory-window-size: 20
+    checkpoint:
+      type: postgres
+      create-tables: true
+      host: 127.0.0.1
+      port: 5432
+      database: vector_test
+      username: postgres
+      password: ${spring.datasource.password}
     stream:
       heartbeat-interval: 15s
       resume-buffer-events: 200
       resume-ttl: 10m
+  rag:
+    as-tool: true
+    top-k: 5
+    similarity-threshold: 0.72
+    min-reliable-score: 0.72
+    default-collection: kb_default
+    answer-mode: grounded
+  mcp:
+    enabled: false
+    server-url: http://127.0.0.1:8081
+  memory:
+    extract:
+      enabled: true
+      async: true
 
 logging:
   level:

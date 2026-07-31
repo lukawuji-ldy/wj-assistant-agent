@@ -45,6 +45,12 @@ build/
 /skills-lock.json
 /.cursor/
 /.idea/
-/schema/
 /.agents/
-/assistant-agent-server/src/main/resources/db/migration/
+
+### Frontend (wuji-assistant-web) ###
+wuji-assistant-web/node_modules/
+wuji-assistant-web/.next/
+wuji-assistant-web/out/
+wuji-assistant-web/.env.local
+wuji-assistant-web/.env*.local
+

@@ -4,7 +4,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
- * MCP 服务启动类（首期空壳，后续注册 Tool）。
+ * MCP 服务启动类（样例 Tool：echo_ping / get_weather）。
  *
  * @author liudy
  */

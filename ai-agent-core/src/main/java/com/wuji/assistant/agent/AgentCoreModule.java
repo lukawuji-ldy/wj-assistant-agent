@@ -1,7 +1,7 @@
 package com.wuji.assistant.agent;
 
 /**
- * Agent 核心模块占位类（后续实现 ReactAgent / ModelRouter 等）。
+ * Agent 核心模块：ChatFacade / ModelRouter / AgentFactory（有界 ReactAgent）。
  *
  * @author liudy
  */

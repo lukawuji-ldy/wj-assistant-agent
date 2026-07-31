@@ -1,26 +1,29 @@
 package com.wuji.assistant.agent;
 
+import com.alibaba.cloud.ai.graph.RunnableConfig;
+import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wuji.assistant.agent.config.WujiAgentProperties;
+import com.wuji.assistant.agent.config.WujiMemoryProperties;
 import com.wuji.assistant.agent.config.WujiModelProperties;
 import com.wuji.assistant.agent.dto.ChatResult;
 import com.wuji.assistant.agent.dto.ChatStreamRequest;
 import com.wuji.assistant.agent.model.LlmCallAuditor;
-import com.wuji.assistant.agent.model.LlmClientFactory;
-import com.wuji.assistant.agent.model.LlmConfigRecord;
+import com.wuji.assistant.agent.model.ModelRouter;
 import com.wuji.assistant.agent.prompt.PromptTemplateService;
+import com.wuji.assistant.agent.stream.AgentStreamBridge;
 import com.wuji.assistant.agent.stream.StreamSession;
 import com.wuji.assistant.agent.stream.StreamSessionRegistry;
 import com.wuji.assistant.common.exception.ErrorCode;
 import com.wuji.assistant.common.exception.WujiException;
 import com.wuji.assistant.common.util.IdGenerator;
 import com.wuji.assistant.memory.ShortTermMemoryService;
+import com.wuji.assistant.memory.extract.MemoryExtractService;
 import com.wuji.assistant.memory.model.ChatMessage;
 import com.wuji.assistant.memory.model.Conversation;
 import com.wuji.assistant.memory.repo.ChatMessageRepository;
 import com.wuji.assistant.memory.repo.ConversationRepository;
-import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -36,10 +39,12 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * 聊天门面：短期记忆 + Prompt + ChatClient（流式含心跳/续传 / 非流式）。
+ * 聊天门面：短期记忆 + Prompt + ModelRouter + 有界 ReactAgent。
  *
  * @author liudy
  */
@@ -50,10 +55,13 @@ public class ChatFacade {
     private final ChatMessageRepository chatMessageRepository;
     private final ShortTermMemoryService shortTermMemoryService;
     private final PromptTemplateService promptTemplateService;
-    private final LlmClientFactory llmClientFactory;
+    private final ModelRouter modelRouter;
+    private final AgentFactory agentFactory;
     private final LlmCallAuditor llmCallAuditor;
     private final WujiModelProperties modelProperties;
     private final WujiAgentProperties agentProperties;
+    private final WujiMemoryProperties memoryProperties;
+    private final MemoryExtractService memoryExtractService;
     private final StreamSessionRegistry streamSessionRegistry;
     private final ObjectMapper objectMapper;
 
@@ -61,20 +69,26 @@ public class ChatFacade {
                       ChatMessageRepository chatMessageRepository,
                       ShortTermMemoryService shortTermMemoryService,
                       PromptTemplateService promptTemplateService,
-                      LlmClientFactory llmClientFactory,
+                      ModelRouter modelRouter,
+                      AgentFactory agentFactory,
                       LlmCallAuditor llmCallAuditor,
                       WujiModelProperties modelProperties,
                       WujiAgentProperties agentProperties,
+                      WujiMemoryProperties memoryProperties,
+                      MemoryExtractService memoryExtractService,
                       StreamSessionRegistry streamSessionRegistry,
                       ObjectMapper objectMapper) {
         this.conversationRepository = conversationRepository;
         this.chatMessageRepository = chatMessageRepository;
         this.shortTermMemoryService = shortTermMemoryService;
         this.promptTemplateService = promptTemplateService;
-        this.llmClientFactory = llmClientFactory;
+        this.modelRouter = modelRouter;
+        this.agentFactory = agentFactory;
         this.llmCallAuditor = llmCallAuditor;
         this.modelProperties = modelProperties;
         this.agentProperties = agentProperties;
+        this.memoryProperties = memoryProperties;
+        this.memoryExtractService = memoryExtractService;
         this.streamSessionRegistry = streamSessionRegistry;
         this.objectMapper = objectMapper;
     }
@@ -97,9 +111,10 @@ public class ChatFacade {
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMapMany(this::runStream)
                 .onErrorResume(ex -> {
-                    String errCode = ex instanceof WujiException w ? w.getErrorCode().getCode()
+                    Throwable mapped = mapAgentError(ex);
+                    String errCode = mapped instanceof WujiException w ? w.getErrorCode().getCode()
                             : ErrorCode.INTERNAL_ERROR.getCode();
-                    String msg = ex.getMessage() == null ? ErrorCode.INTERNAL_ERROR.getMessage() : ex.getMessage();
+                    String msg = mapped.getMessage() == null ? ErrorCode.INTERNAL_ERROR.getMessage() : mapped.getMessage();
                     return Flux.just(emitStandaloneError(errCode, msg, true));
                 });
     }
@@ -131,79 +146,52 @@ public class ChatFacade {
 
     private ChatResult doChat(String userId, ChatStreamRequest request) {
         StreamContext ctx = prepare(userId, request, "STREAMING");
-        long start = System.currentTimeMillis();
+        ModelRouter.AuditContext audit = new ModelRouter.AuditContext(
+                ctx.traceId(),
+                ctx.conversation().getConversationId(),
+                ctx.assistantMsg().getMessageId(),
+                ctx.userId(),
+                ctx.systemPrompt(),
+                ctx.userPrompt()
+        );
+        RunnableConfig runnableConfig = runnableConfig(ctx);
         try {
-            String content = ctx.chatClient().prompt()
-                    .messages(ctx.messages())
-                    .call()
-                    .content();
-            String full = content == null ? "" : content;
+            ModelRouter.RoutedResult<String> routed = modelRouter.execute(audit, client -> {
+                try {
+                    ReactAgent agent = agentFactory.getOrCreate(client.configId());
+                    AssistantMessage reply = agent.call(ctx.messages(), runnableConfig);
+                    return reply == null || reply.getText() == null ? "" : reply.getText();
+                } catch (Exception ex) {
+                    throw AgentFactory.mapLimitException(ex);
+                }
+            });
+            String full = routed.value() == null ? "" : routed.value();
             chatMessageRepository.updateContentAndStatus(
                     ctx.assistantMsg().getMessageId(), full, "COMPLETED");
-            long latency = System.currentTimeMillis() - start;
-            llmCallAuditor.record(new LlmCallAuditor.AuditParams(
-                    ctx.traceId(),
-                    ctx.conversation().getConversationId(),
-                    ctx.assistantMsg().getMessageId(),
-                    ctx.userId(),
-                    ctx.config().getConfigId(),
-                    ctx.config().getProvider(),
-                    1,
-                    false,
-                    "SUCCESS",
-                    null,
-                    (int) latency,
-                    null,
-                    null,
-                    Map.of(
-                            "system", ctx.systemPrompt(),
-                            "user", ctx.userPrompt(),
-                            "model", ctx.config().getModel()
-                    ),
-                    Map.of("content", full)
-            ));
+            triggerExtract(ctx, full);
             return new ChatResult(
                     ctx.conversation().getConversationId(),
                     ctx.assistantMsg().getMessageId(),
                     ctx.userMsg().getMessageId(),
                     ctx.traceId(),
                     full,
-                    ctx.config().getConfigId()
+                    routed.configId()
             );
         } catch (Exception ex) {
-            String errCode = ex instanceof WujiException w ? w.getErrorCode().getCode()
-                    : ErrorCode.INTERNAL_ERROR.getCode();
-            String msg = ex.getMessage() == null ? ErrorCode.INTERNAL_ERROR.getMessage() : ex.getMessage();
             chatMessageRepository.updateContentAndStatus(
                     ctx.assistantMsg().getMessageId(), "", "CANCELLED");
-            llmCallAuditor.record(new LlmCallAuditor.AuditParams(
-                    ctx.traceId(),
-                    ctx.conversation().getConversationId(),
-                    ctx.assistantMsg().getMessageId(),
-                    ctx.userId(),
-                    ctx.config().getConfigId(),
-                    ctx.config().getProvider(),
-                    1,
-                    false,
-                    "FAILED",
-                    errCode,
-                    (int) (System.currentTimeMillis() - start),
-                    null,
-                    null,
-                    Map.of("system", ctx.systemPrompt(), "user", ctx.userPrompt()),
-                    Map.of("error", msg)
-            ));
-            if (ex instanceof WujiException wuji) {
+            Throwable mapped = mapAgentError(ex);
+            if (mapped instanceof WujiException wuji) {
                 throw wuji;
             }
-            throw new WujiException(ErrorCode.INTERNAL_ERROR, msg, ex);
+            String msg = mapped.getMessage() == null ? ErrorCode.INTERNAL_ERROR.getMessage() : mapped.getMessage();
+            throw new WujiException(ErrorCode.INTERNAL_ERROR, msg, mapped);
         }
     }
 
     private StreamContext prepare(String userId, ChatStreamRequest request, String assistantStatus) {
-        String configId = modelProperties.getPrimaryConfigId();
-        ChatClient chatClient = llmClientFactory.getChatClient(configId);
-        LlmConfigRecord cfg = llmClientFactory.getConfig(configId);
+        modelRouter.openFrom(0).orElseThrow(() ->
+                new WujiException(ErrorCode.MODEL_UNAVAILABLE, "无可用 LLM 配置"));
 
         Conversation conversation;
         if (StringUtils.hasText(request.conversationId())) {
@@ -248,7 +236,7 @@ public class ChatFacade {
         StreamSession session = streamSessionRegistry.register(streamId, userId);
 
         return new StreamContext(userId, conversation, userMsg, assistantPlaceholder,
-                messages, chatClient, cfg, streamId, traceId, systemPrompt, userPrompt, session);
+                messages, streamId, traceId, systemPrompt, userPrompt, session);
     }
 
     private Flux<ServerSentEvent<String>> runStream(StreamContext ctx) {
@@ -264,82 +252,8 @@ public class ChatFacade {
                 "streamId", ctx.streamId()
         ));
 
-        Flux<ServerSentEvent<String>> deltas = ctx.chatClient().prompt()
-                .messages(ctx.messages())
-                .stream()
-                .content()
-                .map(chunk -> {
-                    contentBuf.get().append(chunk);
-                    return emit(session, "delta", Map.of("content", chunk));
-                });
-
-        Flux<ServerSentEvent<String>> tail = Mono.fromCallable(() -> {
-                    String full = contentBuf.get().toString();
-                    chatMessageRepository.updateContentAndStatus(
-                            ctx.assistantMsg().getMessageId(), full, "COMPLETED");
-                    long latency = System.currentTimeMillis() - start;
-                    llmCallAuditor.record(new LlmCallAuditor.AuditParams(
-                            ctx.traceId(),
-                            ctx.conversation().getConversationId(),
-                            ctx.assistantMsg().getMessageId(),
-                            ctx.userId(),
-                            ctx.config().getConfigId(),
-                            ctx.config().getProvider(),
-                            1,
-                            false,
-                            "SUCCESS",
-                            null,
-                            (int) latency,
-                            null,
-                            null,
-                            Map.of(
-                                    "system", ctx.systemPrompt(),
-                                    "user", ctx.userPrompt(),
-                                    "model", ctx.config().getModel()
-                            ),
-                            Map.of("content", full)
-                    ));
-                    return emit(session, "done", Map.of(
-                            "finishReason", "stop",
-                            "modelId", ctx.config().getConfigId()
-                    ));
-                })
-                .subscribeOn(Schedulers.boundedElastic())
-                .flux();
-
-        Flux<ServerSentEvent<String>> main = Flux.concat(Flux.just(meta), deltas, tail)
-                .onErrorResume(ex -> Mono.fromCallable(() -> {
-                    String errCode = ex instanceof WujiException w ? w.getErrorCode().getCode()
-                            : ErrorCode.INTERNAL_ERROR.getCode();
-                    String msg = ex.getMessage() == null ? ErrorCode.INTERNAL_ERROR.getMessage() : ex.getMessage();
-                    chatMessageRepository.updateContentAndStatus(
-                            ctx.assistantMsg().getMessageId(),
-                            contentBuf.get().toString(),
-                            "CANCELLED");
-                    llmCallAuditor.record(new LlmCallAuditor.AuditParams(
-                            ctx.traceId(),
-                            ctx.conversation().getConversationId(),
-                            ctx.assistantMsg().getMessageId(),
-                            ctx.userId(),
-                            ctx.config().getConfigId(),
-                            ctx.config().getProvider(),
-                            1,
-                            false,
-                            "FAILED",
-                            errCode,
-                            (int) (System.currentTimeMillis() - start),
-                            null,
-                            null,
-                            Map.of("system", ctx.systemPrompt(), "user", ctx.userPrompt()),
-                            Map.of("error", msg)
-                    ));
-                    return emit(session, "error", Map.of(
-                            "code", errCode,
-                            "message", msg,
-                            "retryable", true,
-                            "streamId", ctx.streamId()
-                    ));
-                }).subscribeOn(Schedulers.boundedElastic()).flux());
+        Flux<ServerSentEvent<String>> llmPart = streamWithFailover(ctx, 0, contentBuf, start, session);
+        Flux<ServerSentEvent<String>> main = Flux.concat(Flux.just(meta), llmPart);
 
         Duration heartbeat = agentProperties.getStream().getHeartbeatInterval();
         if (heartbeat == null || heartbeat.isZero() || heartbeat.isNegative()) {
@@ -351,6 +265,186 @@ public class ChatFacade {
                 .takeUntilOther(main.then());
 
         return Flux.merge(main, pings).doOnComplete(session::touch);
+    }
+
+    private Flux<ServerSentEvent<String>> streamWithFailover(StreamContext ctx,
+                                                             int fromIndex,
+                                                             AtomicReference<StringBuilder> contentBuf,
+                                                             long start,
+                                                             StreamSession session) {
+        Optional<ModelRouter.IndexedClient> opened = modelRouter.openFrom(fromIndex);
+        if (opened.isEmpty()) {
+            return Mono.fromCallable(() -> {
+                chatMessageRepository.updateContentAndStatus(
+                        ctx.assistantMsg().getMessageId(), contentBuf.get().toString(), "CANCELLED");
+                return emit(session, "error", Map.of(
+                        "code", ErrorCode.MODEL_UNAVAILABLE.getCode(),
+                        "message", "无可用 LLM 配置",
+                        "retryable", true,
+                        "streamId", ctx.streamId()
+                ));
+            }).subscribeOn(Schedulers.boundedElastic()).flux();
+        }
+        return attemptStream(ctx, opened.get(), 1, contentBuf, start, session);
+    }
+
+    private Flux<ServerSentEvent<String>> attemptStream(StreamContext ctx,
+                                                        ModelRouter.IndexedClient indexed,
+                                                        int attempt,
+                                                        AtomicReference<StringBuilder> contentBuf,
+                                                        long start,
+                                                        StreamSession session) {
+        ModelRouter.RoutedClient routed = indexed.client();
+        AtomicBoolean deltaSent = new AtomicBoolean(false);
+        int maxAttempts = Math.max(1, modelProperties.getRetry().getMaxAttempts());
+        Duration backoff = modelProperties.getRetry().getBackoff() == null
+                ? Duration.ofSeconds(1) : modelProperties.getRetry().getBackoff();
+
+        ReactAgent agent = agentFactory.getOrCreate(routed.configId());
+        RunnableConfig runnableConfig = runnableConfig(ctx);
+
+        Flux<ServerSentEvent<String>> deltas;
+        try {
+            deltas = AgentStreamBridge.toContentDeltas(agent.streamMessages(ctx.messages(), runnableConfig))
+                    .map(chunk -> {
+                        deltaSent.set(true);
+                        contentBuf.get().append(chunk);
+                        return emit(session, "delta", Map.of("content", chunk));
+                    });
+        } catch (Exception ex) {
+            return handleStreamError(ctx, indexed, attempt, maxAttempts, backoff,
+                    contentBuf, start, session, false, mapAgentError(ex));
+        }
+
+        Flux<ServerSentEvent<String>> tail = Mono.fromCallable(() -> {
+                    String full = contentBuf.get().toString();
+                    chatMessageRepository.updateContentAndStatus(
+                            ctx.assistantMsg().getMessageId(), full, "COMPLETED");
+                    triggerExtract(ctx, full);
+                    long latency = System.currentTimeMillis() - start;
+                    llmCallAuditor.record(new LlmCallAuditor.AuditParams(
+                            ctx.traceId(),
+                            ctx.conversation().getConversationId(),
+                            ctx.assistantMsg().getMessageId(),
+                            ctx.userId(),
+                            routed.configId(),
+                            routed.config().getProvider(),
+                            attempt,
+                            routed.fallback(),
+                            "SUCCESS",
+                            null,
+                            (int) latency,
+                            null,
+                            null,
+                            Map.of(
+                                    "system", ctx.systemPrompt(),
+                                    "user", ctx.userPrompt(),
+                                    "model", routed.config().getModel()
+                            ),
+                            Map.of("content", full)
+                    ));
+                    return emit(session, "done", Map.of(
+                            "finishReason", "stop",
+                            "modelId", routed.configId()
+                    ));
+                })
+                .subscribeOn(Schedulers.boundedElastic())
+                .flux();
+
+        return Flux.concat(deltas, tail)
+                .onErrorResume(ex -> handleStreamError(ctx, indexed, attempt, maxAttempts, backoff,
+                        contentBuf, start, session, deltaSent.get(), mapAgentError(ex)));
+    }
+
+    private Flux<ServerSentEvent<String>> handleStreamError(StreamContext ctx,
+                                                           ModelRouter.IndexedClient indexed,
+                                                           int attempt,
+                                                           int maxAttempts,
+                                                           Duration backoff,
+                                                           AtomicReference<StringBuilder> contentBuf,
+                                                           long start,
+                                                           StreamSession session,
+                                                           boolean deltaSent,
+                                                           Throwable ex) {
+        ModelRouter.RoutedClient routed = indexed.client();
+        ErrorCode mapped = ex instanceof WujiException w ? w.getErrorCode() : modelRouter.mapErrorCode(ex);
+        String errCode = mapped.getCode();
+        String msg = ex.getMessage() == null ? mapped.getMessage() : ex.getMessage();
+        boolean retryable = mapped != ErrorCode.AGENT_MAX_ITERATIONS && modelRouter.isRetryable(ex);
+
+        Mono<Void> auditFail = Mono.fromRunnable(() -> llmCallAuditor.record(new LlmCallAuditor.AuditParams(
+                ctx.traceId(),
+                ctx.conversation().getConversationId(),
+                ctx.assistantMsg().getMessageId(),
+                ctx.userId(),
+                routed.configId(),
+                routed.config().getProvider(),
+                attempt,
+                routed.fallback(),
+                "FAILED",
+                errCode,
+                (int) (System.currentTimeMillis() - start),
+                null,
+                null,
+                Map.of("system", ctx.systemPrompt(), "user", ctx.userPrompt()),
+                Map.of("error", msg)
+        ))).subscribeOn(Schedulers.boundedElastic()).then();
+
+        if (!deltaSent && mapped != ErrorCode.AGENT_MAX_ITERATIONS && modelRouter.isRetryable(ex)) {
+            if (attempt < maxAttempts) {
+                Duration delay = backoff.isZero() ? Duration.ZERO : backoff.multipliedBy(attempt);
+                return auditFail.thenMany(
+                        Mono.delay(delay)
+                                .thenMany(attemptStream(ctx, indexed, attempt + 1, contentBuf, start, session)));
+            }
+            if (modelRouter.isFailoverWorthy(ex)) {
+                contentBuf.set(new StringBuilder());
+                return auditFail.thenMany(
+                        streamWithFailover(ctx, indexed.index() + 1, contentBuf, start, session));
+            }
+        }
+
+        boolean finalRetryable = retryable;
+        return auditFail.thenMany(Mono.fromCallable(() -> {
+            chatMessageRepository.updateContentAndStatus(
+                    ctx.assistantMsg().getMessageId(),
+                    contentBuf.get().toString(),
+                    "CANCELLED");
+            return emit(session, "error", Map.of(
+                    "code", errCode,
+                    "message", msg,
+                    "retryable", finalRetryable,
+                    "streamId", ctx.streamId()
+            ));
+        }).subscribeOn(Schedulers.boundedElastic()).flux());
+    }
+
+    private void triggerExtract(StreamContext ctx, String assistantText) {
+        if (memoryProperties.getExtract() == null || !memoryProperties.getExtract().isEnabled()) {
+            return;
+        }
+        Runnable task = () -> memoryExtractService.extractAsync(
+                ctx.conversation().getConversationId(),
+                ctx.assistantMsg().getMessageId(),
+                ctx.userId(),
+                ctx.userPrompt(),
+                assistantText);
+        if (memoryProperties.getExtract().isAsync()) {
+            Schedulers.boundedElastic().schedule(task);
+        } else {
+            task.run();
+        }
+    }
+
+    private static RunnableConfig runnableConfig(StreamContext ctx) {
+        // Checkpoint thread_name = userId:conversationId；可见历史仍来自 chat_message
+        return RunnableConfig.builder()
+                .threadId(ctx.userId() + ":" + ctx.conversation().getConversationId())
+                .build();
+    }
+
+    private static Throwable mapAgentError(Throwable ex) {
+        return AgentFactory.mapLimitException(ex);
     }
 
     private ServerSentEvent<String> emit(StreamSession session, String event, Map<String, Object> data) {
@@ -383,8 +477,6 @@ public class ChatFacade {
             ChatMessage userMsg,
             ChatMessage assistantMsg,
             List<Message> messages,
-            ChatClient chatClient,
-            LlmConfigRecord config,
             String streamId,
             String traceId,
             String systemPrompt,

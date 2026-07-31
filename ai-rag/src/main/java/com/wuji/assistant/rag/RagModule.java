@@ -1,7 +1,7 @@
 package com.wuji.assistant.rag;
 
 /**
- * RAG 模块占位类（后续实现入库/检索/中文切分）。
+ * RAG 模块：检索 Tool / 知识召回。
  *
  * @author liudy
  */
