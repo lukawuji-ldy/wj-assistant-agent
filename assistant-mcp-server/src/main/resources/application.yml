@@ -1,0 +1,11 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: assistant-mcp-server
+
+logging:
+  level:
+    root: INFO
+    com.wuji.assistant: INFO

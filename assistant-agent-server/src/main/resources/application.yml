@@ -1,0 +1,53 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: assistant-agent-server
+  datasource:
+    url: jdbc:postgresql://127.0.0.1:5432/vector_test
+    username: postgres
+    password: 1234567890
+    driver-class-name: org.postgresql.Driver
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    encoding: UTF-8
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiChatAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiEmbeddingAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiImageAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioSpeechAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioTranscriptionAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiModerationAutoConfiguration
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+wuji:
+  security:
+    jwt:
+      secret: ${WUJI_JWT_SECRET:change-me-wuji-assistant-jwt-secret-key-32b}
+      expire-hours: 72
+      issuer: wuji-assistant
+  model:
+    primary-config-id: llm_primary
+    api-key-override: ${WUJI_LLM_API_KEY:}
+  agent:
+    system-prompt-code: agent.default.system
+    user-prompt-code: agent.default.user
+    memory-window-size: 20
+    stream:
+      heartbeat-interval: 15s
+      resume-buffer-events: 200
+      resume-ttl: 10m
+
+logging:
+  level:
+    root: INFO
+    com.wuji.assistant: INFO
