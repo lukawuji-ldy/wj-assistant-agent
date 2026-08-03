@@ -10,15 +10,20 @@ import java.time.OffsetDateTime;
  */
 public class LlmConfigRecord {
 
+    public static final String KIND_CHAT = "CHAT";
+    public static final String KIND_EMBEDDING = "EMBEDDING";
+
     private Long id;
     private String configId;
     private String name;
     private String provider;
+    private String modelKind;
     private String baseUrl;
     private String apiKeyCipher;
     private String model;
     private BigDecimal temperature;
     private Integer maxTokens;
+    private String extraJson;
     private String status;
     private OffsetDateTime createTime;
     private OffsetDateTime updateTime;
@@ -53,6 +58,14 @@ public class LlmConfigRecord {
 
     public void setProvider(String provider) {
         this.provider = provider;
+    }
+
+    public String getModelKind() {
+        return modelKind;
+    }
+
+    public void setModelKind(String modelKind) {
+        this.modelKind = modelKind;
     }
 
     public String getBaseUrl() {
@@ -93,6 +106,14 @@ public class LlmConfigRecord {
 
     public void setMaxTokens(Integer maxTokens) {
         this.maxTokens = maxTokens;
+    }
+
+    public String getExtraJson() {
+        return extraJson;
+    }
+
+    public void setExtraJson(String extraJson) {
+        this.extraJson = extraJson;
     }
 
     public String getStatus() {

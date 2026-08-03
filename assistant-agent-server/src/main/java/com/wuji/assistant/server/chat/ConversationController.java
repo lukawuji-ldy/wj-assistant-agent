@@ -8,6 +8,7 @@ import com.wuji.assistant.memory.repo.ChatMessageRepository;
 import com.wuji.assistant.memory.repo.ConversationRepository;
 import com.wuji.assistant.server.security.CurrentUser;
 import org.springframework.util.StringUtils;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -97,6 +98,23 @@ public class ConversationController {
                     }
                     return ApiResponse.ok(conversationRepository.updateTitle(
                             user.userId(), conversationId, request.title().trim()));
+                }).subscribeOn(Schedulers.boundedElastic()));
+    }
+
+    /**
+     * 硬删除会话及其消息。
+     *
+     * @param conversationId 会话键
+     * @return 空成功
+     */
+    @DeleteMapping("/{conversationId}")
+    public Mono<ApiResponse<Void>> delete(@PathVariable String conversationId) {
+        return CurrentUser.require().flatMap(user ->
+                Mono.fromCallable(() -> {
+                    conversationRepository.requireOwned(user.userId(), conversationId);
+                    chatMessageRepository.deleteByConversation(conversationId, user.userId());
+                    conversationRepository.deleteOwned(user.userId(), conversationId);
+                    return ApiResponse.<Void>ok(null);
                 }).subscribeOn(Schedulers.boundedElastic()));
     }
 

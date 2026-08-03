@@ -14,6 +14,13 @@ spring:
         capabilities:
           tool: true
 
+wuji:
+  mcp:
+    auth:
+      # 本地默认关闭；生产请设 true，并用环境变量注入密钥
+      enabled: ${WUJI_MCP_AUTH_ENABLED:false}
+      api-key: ${WUJI_MCP_API_KEY:}
+
 logging:
   level:
     root: INFO

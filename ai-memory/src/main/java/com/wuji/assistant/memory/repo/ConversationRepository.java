@@ -131,6 +131,20 @@ public class ConversationRepository {
     }
 
     /**
+     * 硬删除会话行（调用方须先删消息并校验归属）。
+     *
+     * @param userId         用户
+     * @param conversationId 会话
+     * @return 删除行数
+     */
+    public int deleteOwned(String userId, String conversationId) {
+        requireOwned(userId, conversationId);
+        return jdbcTemplate.update(
+                "DELETE FROM conversation WHERE conversation_id = ? AND user_id = ?",
+                conversationId, userId);
+    }
+
+    /**
      * 增加消息计数并刷新活跃时间。
      *
      * @param conversationId 会话
@@ -142,5 +156,29 @@ public class ConversationRepository {
                 UPDATE conversation SET message_count = message_count + ?, last_active_time = ?
                 WHERE conversation_id = ?
                 """, delta, Timestamp.from(now.toInstant()), conversationId);
+    }
+
+    /**
+     * 原子写入滚动摘要与 watermark。
+     *
+     * @param conversationId        会话
+     * @param summaryJson           摘要 JSON
+     * @param untilTime             覆盖截止时间
+     * @param untilMessageId        覆盖截止消息
+     */
+    public void updateSummary(String conversationId, String summaryJson,
+                              OffsetDateTime untilTime, String untilMessageId) {
+        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+        jdbcTemplate.update("""
+                UPDATE conversation
+                SET summary = ?, summary_until_time = ?, summary_until_message_id = ?,
+                    summary_compressed_at = ?
+                WHERE conversation_id = ?
+                """,
+                summaryJson,
+                untilTime == null ? null : Timestamp.from(untilTime.toInstant()),
+                untilMessageId,
+                Timestamp.from(now.toInstant()),
+                conversationId);
     }
 }

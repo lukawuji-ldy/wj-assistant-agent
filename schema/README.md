@@ -11,7 +11,7 @@
 | `01_sys_user.sql` … `14_checkpoint.sql` | 业务表 / 向量表 / Agent Checkpoint（PostgresSaver） |
 | `all.sql` | 用 `\ir` 按序串联以上脚本 |
 
-等价迁移：`V1__init.sql` + `V2__agent_checkpoint.sql`。
+等价迁移：`V1__init.sql` + `V2__agent_checkpoint.sql` + `V3__vector_store_metadata_jsonb.sql` + `V4__llm_config_model_kind.sql`（`llm_config.model_kind` + `llm_embedding` 种子）。
 
 ## 一键落库
 

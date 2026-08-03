@@ -1,12 +1,16 @@
 package com.wuji.assistant.agent.model;
 
 import com.wuji.assistant.agent.config.WujiModelProperties;
+import com.wuji.assistant.agent.observability.AgentTelemetry;
+import com.wuji.assistant.agent.observability.LlmUsageHolder;
+import com.wuji.assistant.agent.observability.TokenUsageExtractor;
 import com.wuji.assistant.common.exception.ErrorCode;
 import com.wuji.assistant.common.exception.WujiException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
@@ -33,13 +37,16 @@ public class ModelRouter {
     private final LlmClientFactory llmClientFactory;
     private final WujiModelProperties modelProperties;
     private final LlmCallAuditor llmCallAuditor;
+    private final AgentTelemetry agentTelemetry;
 
     public ModelRouter(LlmClientFactory llmClientFactory,
                        WujiModelProperties modelProperties,
-                       LlmCallAuditor llmCallAuditor) {
+                       LlmCallAuditor llmCallAuditor,
+                       AgentTelemetry agentTelemetry) {
         this.llmClientFactory = llmClientFactory;
         this.modelProperties = modelProperties;
         this.llmCallAuditor = llmCallAuditor;
+        this.agentTelemetry = agentTelemetry;
     }
 
     /**
@@ -113,7 +120,13 @@ public class ModelRouter {
      */
     public RoutedResult<String> callContent(List<Message> messages, AuditContext audit) {
         return execute(audit, client -> {
-            String content = client.chatClient().prompt().messages(messages).call().content();
+            ChatResponse response = client.chatClient().prompt().messages(messages).call().chatResponse();
+            Integer[] tokens = TokenUsageExtractor.fromChatResponse(response);
+            LlmUsageHolder.set(tokens[0], tokens[1]);
+            String content = response == null || response.getResult() == null
+                    || response.getResult().getOutput() == null
+                    ? null
+                    : response.getResult().getOutput().getText();
             return content == null ? "" : content;
         });
     }
@@ -142,15 +155,23 @@ public class ModelRouter {
             if (opened.isEmpty()) {
                 continue;
             }
+            if (configIndex > 0) {
+                agentTelemetry.countFailover(ids.get(configIndex - 1), configId);
+            }
             RoutedClient routed = opened.get();
             for (int attempt = 1; attempt <= maxAttempts; attempt++) {
                 long start = System.currentTimeMillis();
                 try {
-                    T value = call.apply(routed);
+                    T value = agentTelemetry.observe("llm.call", new String[]{
+                            "modelId", routed.configId(),
+                            "attempt", String.valueOf(attempt),
+                            "is_fallback", String.valueOf(routed.fallback())
+                    }, () -> call.apply(routed));
                     llmCallAuditor.record(successAudit(audit, routed, attempt, (int) (System.currentTimeMillis() - start), value));
                     return new RoutedResult<>(value, routed);
                 } catch (Throwable ex) {
                     last = ex;
+                    LlmUsageHolder.clear();
                     String errCode = mapErrorCode(ex).getCode();
                     llmCallAuditor.record(failedAudit(audit, routed, attempt, (int) (System.currentTimeMillis() - start),
                             errCode, ex.getMessage()));
@@ -250,6 +271,7 @@ public class ModelRouter {
     private LlmCallAuditor.AuditParams successAudit(AuditContext audit, RoutedClient routed,
                                                     int attempt, int latencyMs, Object value) {
         String content = value instanceof String s ? s : String.valueOf(value);
+        LlmUsageHolder.Usage usage = LlmUsageHolder.getAndClear();
         return new LlmCallAuditor.AuditParams(
                 audit.traceId(),
                 audit.conversationId(),
@@ -262,8 +284,8 @@ public class ModelRouter {
                 "SUCCESS",
                 null,
                 latencyMs,
-                null,
-                null,
+                usage.promptTokens(),
+                usage.completionTokens(),
                 Map.of(
                         "system", audit.systemPrompt(),
                         "user", audit.userPrompt(),

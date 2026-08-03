@@ -9,7 +9,6 @@ import org.springframework.util.StringUtils;
 
 import java.sql.Timestamp;
 import java.time.Instant;
-import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -97,14 +96,52 @@ public class MemoryExtractService {
             }
             return new MemoryActionItem(MemoryAction.UPDATE, "PREFERENCE", "preference.note", value);
         }
-        String lower = text.toLowerCase(Locale.ROOT);
-        if (lower.contains("记住") || lower.contains("以后都")) {
-            return new MemoryActionItem(MemoryAction.IGNORE, "NONE", null, null);
+        // 显式「记住」由 L1 rememberExplicit 处理；此处不再 IGNORE 后丢弃——若 L2 单独跑到则写入 note
+        String explicit = ExplicitRememberDetector.detectContent(text);
+        if (explicit != null) {
+            return new MemoryActionItem(MemoryAction.UPDATE, "PREFERENCE", "preference.explicit", explicit);
         }
         return new MemoryActionItem(MemoryAction.IGNORE, "NONE", null, null);
     }
 
+    /**
+     * L1：用户显式记忆指令，同步写入（source=USER_DIRECT）。
+     *
+     * @param conversationId 会话
+     * @param messageId      用户消息 id（幂等）
+     * @param userId         用户
+     * @param utterance      原文
+     * @return action
+     */
+    public MemoryActionItem rememberExplicit(String conversationId, String messageId,
+                                             String userId, String utterance) {
+        String content = ExplicitRememberDetector.detectContent(utterance);
+        if (content == null || !StringUtils.hasText(userId) || !StringUtils.hasText(messageId)) {
+            return new MemoryActionItem(MemoryAction.IGNORE, "NONE", null, null);
+        }
+        Integer exists = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM memory_extract_log WHERE message_id = ?", Integer.class, messageId);
+        if (exists != null && exists > 0) {
+            return new MemoryActionItem(MemoryAction.IGNORE, "NONE", null, null);
+        }
+        MemoryActionItem item = new MemoryActionItem(
+                MemoryAction.UPDATE, "PREFERENCE", "preference.explicit", content);
+        Timestamp now = Timestamp.from(Instant.now());
+        try {
+            upsertProfile(userId, item, now, "USER_DIRECT");
+            insertLog(conversationId, messageId, userId, "SUCCESS", item, null, now);
+        } catch (Exception e) {
+            insertLog(conversationId, messageId, userId, "FAILED", item, truncate(e.getMessage()), now);
+            throw e;
+        }
+        return item;
+    }
+
     private void upsertProfile(String userId, MemoryActionItem item, Timestamp now) {
+        upsertProfile(userId, item, now, "extract");
+    }
+
+    private void upsertProfile(String userId, MemoryActionItem item, Timestamp now, String source) {
         Integer cnt = jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM user_profile
                 WHERE user_id = ? AND memory_key = ? AND status = 'ACTIVE'
@@ -112,15 +149,15 @@ public class MemoryExtractService {
         if (cnt != null && cnt > 0) {
             jdbcTemplate.update("""
                     UPDATE user_profile
-                    SET memory_value = ?, update_time = ?, version = version + 1, source = 'extract'
+                    SET memory_value = ?, update_time = ?, version = version + 1, source = ?
                     WHERE user_id = ? AND memory_key = ? AND status = 'ACTIVE'
-                    """, item.memoryValue(), now, userId, item.memoryKey());
+                    """, item.memoryValue(), now, source, userId, item.memoryKey());
         } else {
             jdbcTemplate.update("""
                     INSERT INTO user_profile
                     (id, memory_id, user_id, memory_type, memory_key, memory_value, status,
                      confidence, importance, source, version, create_time, update_time)
-                    VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', 0.80, 0.60, 'extract', 1, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', 0.90, 0.80, ?, 1, ?, ?)
                     """,
                     IdGenerator.nextLong(),
                     IdGenerator.nextBizId("mem_"),
@@ -128,6 +165,7 @@ public class MemoryExtractService {
                     item.resultType(),
                     item.memoryKey(),
                     item.memoryValue(),
+                    source,
                     now, now);
         }
     }

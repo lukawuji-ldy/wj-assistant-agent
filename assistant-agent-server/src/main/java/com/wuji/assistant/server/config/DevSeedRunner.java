@@ -60,11 +60,12 @@ public class DevSeedRunner implements ApplicationRunner {
 
     private void seedLlm() {
         Timestamp now = Timestamp.from(Instant.now());
-        seedLlmRow(1L, "llm_primary", "默认主模型", now);
-        seedLlmRow(2L, "llm_backup_1", "备用模型占位", now);
+        seedChatLlmRow(1L, "llm_primary", "默认主模型", now);
+        seedChatLlmRow(2L, "llm_backup_1", "备用模型占位", now);
+        seedEmbeddingLlmRow(3L, "llm_embedding", "默认向量模型", now);
     }
 
-    private void seedLlmRow(long id, String configId, String name, Timestamp now) {
+    private void seedChatLlmRow(long id, String configId, String name, Timestamp now) {
         Integer cnt = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM llm_config WHERE config_id = ?", Integer.class, configId);
         if (cnt != null && cnt > 0) {
@@ -72,14 +73,33 @@ public class DevSeedRunner implements ApplicationRunner {
         }
         jdbcTemplate.update("""
                 INSERT INTO llm_config
-                (id, config_id, name, provider, base_url, api_key_cipher, model, temperature, max_tokens,
+                (id, config_id, name, provider, model_kind, base_url, api_key_cipher, model, temperature, max_tokens,
                  extra_json, status, create_time, update_time)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}'::jsonb, ?, ?, ?)
+                VALUES (?, ?, ?, ?, 'CHAT', ?, ?, ?, ?, ?, '{}'::jsonb, ?, ?, ?)
                 """,
                 id, configId, name, "openai_compatible",
                 "https://api.openai.com/v1", "CHANGE_ME", "gpt-4o-mini",
                 0.70, 4096, "ACTIVE", now, now);
-        log.info("seeded llm_config {}; set WUJI_LLM_API_KEY or update api_key_cipher", configId);
+        log.info("seeded llm_config {} (CHAT); set WUJI_LLM_API_KEY or update api_key_cipher", configId);
+    }
+
+    private void seedEmbeddingLlmRow(long id, String configId, String name, Timestamp now) {
+        Integer cnt = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM llm_config WHERE config_id = ?", Integer.class, configId);
+        if (cnt != null && cnt > 0) {
+            return;
+        }
+        jdbcTemplate.update("""
+                INSERT INTO llm_config
+                (id, config_id, name, provider, model_kind, base_url, api_key_cipher, model, temperature, max_tokens,
+                 extra_json, status, create_time, update_time)
+                VALUES (?, ?, ?, ?, 'EMBEDDING', ?, ?, ?, NULL, NULL,
+                        '{"dimensions":1536,"embeddings_path":"/v1/embeddings"}'::jsonb, ?, ?, ?)
+                """,
+                id, configId, name, "openai_compatible",
+                "https://api.openai.com/v1", "CHANGE_ME", "text-embedding-3-small",
+                "ACTIVE", now, now);
+        log.info("seeded llm_config {} (EMBEDDING); set WUJI_LLM_API_KEY or update api_key_cipher", configId);
     }
 
     private void seedPrompt() {
@@ -138,6 +158,6 @@ public class DevSeedRunner implements ApplicationRunner {
                 "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee2",
                 "Sick leave requires a medical certificate when absence exceeds 2 consecutive working days.",
                 "{\"doc_id\":\"doc_leave_policy\",\"version\":1,\"section\":\"sick\",\"chunk_id\":\"c2\",\"status\":\"ACTIVE\",\"collection\":\"kb_default\"}");
-        log.info("seeded kb sample doc_leave_policy + vector_store chunks (embedding null; keyword retrieval MVP)");
+        log.info("seeded kb sample doc_leave_policy + vector_store chunks (embedding null; cosine when Key available, else ILIKE)");
     }
 }

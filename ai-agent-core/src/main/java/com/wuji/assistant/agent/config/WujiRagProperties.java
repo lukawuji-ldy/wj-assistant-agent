@@ -16,6 +16,12 @@ public class WujiRagProperties {
     private double minReliableScore = 0.72;
     private String defaultCollection = "kb_default";
     private String answerMode = "grounded";
+    private boolean embeddingEnabled = true;
+    private String embeddingConfigId = "llm_embedding";
+    private int chunkSize = 500;
+    private int chunkOverlap = 80;
+    private int minChunkLengthToKeep = 50;
+    private boolean chapterSplitEnabled = true;
 
     public boolean isAsTool() {
         return asTool;
@@ -63,5 +69,53 @@ public class WujiRagProperties {
 
     public void setAnswerMode(String answerMode) {
         this.answerMode = answerMode;
+    }
+
+    public boolean isEmbeddingEnabled() {
+        return embeddingEnabled;
+    }
+
+    public void setEmbeddingEnabled(boolean embeddingEnabled) {
+        this.embeddingEnabled = embeddingEnabled;
+    }
+
+    public String getEmbeddingConfigId() {
+        return embeddingConfigId;
+    }
+
+    public void setEmbeddingConfigId(String embeddingConfigId) {
+        this.embeddingConfigId = embeddingConfigId;
+    }
+
+    public int getChunkSize() {
+        return chunkSize;
+    }
+
+    public void setChunkSize(int chunkSize) {
+        this.chunkSize = chunkSize;
+    }
+
+    public int getChunkOverlap() {
+        return chunkOverlap;
+    }
+
+    public void setChunkOverlap(int chunkOverlap) {
+        this.chunkOverlap = chunkOverlap;
+    }
+
+    public int getMinChunkLengthToKeep() {
+        return minChunkLengthToKeep;
+    }
+
+    public void setMinChunkLengthToKeep(int minChunkLengthToKeep) {
+        this.minChunkLengthToKeep = minChunkLengthToKeep;
+    }
+
+    public boolean isChapterSplitEnabled() {
+        return chapterSplitEnabled;
+    }
+
+    public void setChapterSplitEnabled(boolean chapterSplitEnabled) {
+        this.chapterSplitEnabled = chapterSplitEnabled;
     }
 }

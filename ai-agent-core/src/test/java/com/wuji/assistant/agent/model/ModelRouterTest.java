@@ -1,6 +1,7 @@
 package com.wuji.assistant.agent.model;
 
 import com.wuji.assistant.agent.config.WujiModelProperties;
+import com.wuji.assistant.agent.observability.AgentTelemetry;
 import com.wuji.assistant.common.exception.ErrorCode;
 import com.wuji.assistant.common.exception.WujiException;
 import org.junit.jupiter.api.BeforeEach;
@@ -10,11 +11,13 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -52,7 +55,23 @@ class ModelRouterTest {
         modelProperties.getRetry().setMaxAttempts(1);
         modelProperties.getRetry().setBackoff(Duration.ZERO);
         modelProperties.setRateLimitCodes(List.of(429));
-        modelRouter = new ModelRouter(llmClientFactory, modelProperties, llmCallAuditor);
+        @SuppressWarnings("unchecked")
+        ObjectProvider<Object> empty = mock(ObjectProvider.class);
+        when(empty.getIfAvailable(any())).thenAnswer(inv -> ((java.util.function.Supplier<?>) inv.getArgument(0)).get());
+        AgentTelemetry telemetry = new AgentTelemetry(
+                (ObjectProvider) empty,
+                (ObjectProvider) empty);
+        modelRouter = new ModelRouter(llmClientFactory, modelProperties, llmCallAuditor, telemetry);
+    }
+
+    private ModelRouter newRouter() {
+        @SuppressWarnings("unchecked")
+        ObjectProvider<Object> empty = mock(ObjectProvider.class);
+        when(empty.getIfAvailable(any())).thenAnswer(inv -> ((java.util.function.Supplier<?>) inv.getArgument(0)).get());
+        AgentTelemetry telemetry = new AgentTelemetry(
+                (ObjectProvider) empty,
+                (ObjectProvider) empty);
+        return new ModelRouter(llmClientFactory, modelProperties, llmCallAuditor, telemetry);
     }
 
     @Test
@@ -110,7 +129,7 @@ class ModelRouterTest {
     @Test
     void emptyFallbacks_allUnavailable_throwsModelUnavailable() {
         modelProperties.setFallbackConfigIds(List.of());
-        modelRouter = new ModelRouter(llmClientFactory, modelProperties, llmCallAuditor);
+        modelRouter = newRouter();
 
         when(llmClientFactory.getChatClient("llm_primary"))
                 .thenThrow(new WujiException(ErrorCode.MODEL_UNAVAILABLE, "key missing"));
@@ -142,7 +161,7 @@ class ModelRouterTest {
     @Test
     void sameConfigRetries_thenFailover() {
         modelProperties.getRetry().setMaxAttempts(2);
-        modelRouter = new ModelRouter(llmClientFactory, modelProperties, llmCallAuditor);
+        modelRouter = newRouter();
 
         LlmConfigRecord primary = config("llm_primary", "p1");
         LlmConfigRecord backup = config("llm_backup_1", "p2");
@@ -171,6 +190,7 @@ class ModelRouterTest {
         LlmConfigRecord r = new LlmConfigRecord();
         r.setConfigId(configId);
         r.setProvider(provider);
+        r.setModelKind(LlmConfigRecord.KIND_CHAT);
         r.setModel("gpt-test");
         return r;
     }

@@ -3,6 +3,7 @@ package com.wuji.assistant.server;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.security.reactive.ReactiveUserDetailsServiceAutoConfiguration;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Agent 主服务启动类。
@@ -13,6 +14,7 @@ import org.springframework.boot.autoconfigure.security.reactive.ReactiveUserDeta
         scanBasePackages = "com.wuji.assistant",
         exclude = ReactiveUserDetailsServiceAutoConfiguration.class
 )
+@EnableScheduling
 public class AssistantAgentServerApplication {
 
     /**

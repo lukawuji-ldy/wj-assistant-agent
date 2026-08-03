@@ -25,18 +25,22 @@ spring:
   ai:
     mcp:
       client:
-        enabled: ${wuji.mcp.enabled:true}
+        enabled: ${wuji.mcp.enabled:false}
         request-timeout: 20s
-        sse:
-          connections:
-            wuji-mcp:
-              url: ${wuji.mcp.server-url:http://127.0.0.1:8081}
+        # SSE URL / Bearer 由 McpClientTransportConfiguration（wuji.mcp.*）装配，避免重复建连
 
 management:
   endpoints:
     web:
       exposure:
         include: health,info
+  tracing:
+    sampling:
+      probability: ${OTEL_TRACES_SAMPLER_ARG:1.0}
+  otlp:
+    tracing:
+      # 无 collector 时导出失败不阻断启动；可用 OTEL_EXPORTER_OTLP_ENDPOINT 覆盖
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://127.0.0.1:4318/v1/traces}
 
 wuji:
   security:
@@ -62,7 +66,8 @@ wuji:
     memory-window-size: 20
     checkpoint:
       type: postgres
-      create-tables: true
+      # 表由 schema/14_checkpoint.sql / Flyway V2 管理；true 仅用于空库且未跑迁移时
+      create-tables: false
       host: 127.0.0.1
       port: 5432
       database: vector_test
@@ -76,16 +81,35 @@ wuji:
     as-tool: true
     top-k: 5
     similarity-threshold: 0.72
-    min-reliable-score: 0.72
+    min-reliable-score: 0.5
     default-collection: kb_default
     answer-mode: grounded
+    embedding-enabled: true
+    embedding-config-id: llm_embedding
+    chunk-size: 500
+    chunk-overlap: 80
+    min-chunk-length-to-keep: 50
+    chapter-split-enabled: true
   mcp:
     enabled: false
     server-url: http://127.0.0.1:8081
+    sse-endpoint: /sse
+    auth:
+      enabled: ${WUJI_MCP_AUTH_ENABLED:false}
+      api-key: ${WUJI_MCP_API_KEY:}
   memory:
+    short:
+      max-message-count: 20
+      max-token: 8000
+      compress-message-threshold: 30
+      keep-recent-messages: 10
     extract:
       enabled: true
       async: true
+      explicit-detect-enabled: true
+    lifecycle:
+      consolidate-enabled: true
+      consolidate-cron: "0 0 3 * * ?"
 
 logging:
   level:

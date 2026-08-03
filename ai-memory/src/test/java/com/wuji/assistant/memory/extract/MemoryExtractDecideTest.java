@@ -26,5 +26,9 @@ class MemoryExtractDecideTest {
 
         MemoryActionItem ignore = svc.decide("今天天气怎么样");
         assertEquals(MemoryAction.IGNORE, ignore.action());
+
+        MemoryActionItem remember = svc.decide("记住：我用 Java 17");
+        assertEquals(MemoryAction.UPDATE, remember.action());
+        assertEquals("preference.explicit", remember.memoryKey());
     }
 }

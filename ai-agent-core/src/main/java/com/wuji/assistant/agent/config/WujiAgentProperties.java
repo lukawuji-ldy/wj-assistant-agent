@@ -103,7 +103,8 @@ public class WujiAgentProperties {
         /** postgres | memory */
         private String type = "postgres";
 
-        private boolean createTables = true;
+        /** 默认 false：表由 schema/Flyway 管理；SAA 1.1.2.2 建索引非幂等 */
+        private boolean createTables = false;
 
         private String host = "127.0.0.1";
 

@@ -24,7 +24,7 @@ public final class AgentStreamBridge {
         return messages
                 .filter(AssistantMessage.class::isInstance)
                 .map(AssistantMessage.class::cast)
-                .map(AssistantMessage::getText)
-                .filter(text -> text != null && !text.isEmpty());
+                .mapNotNull(AssistantMessage::getText)
+                .filter(text -> !text.isEmpty());
     }
 }

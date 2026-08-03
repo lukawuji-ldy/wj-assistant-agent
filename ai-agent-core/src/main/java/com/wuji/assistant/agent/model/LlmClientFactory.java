@@ -79,16 +79,20 @@ public class LlmClientFactory {
     }
 
     private CachedClients build(String configId) {
-        LlmConfigRecord cfg = llmConfigRepository.requireActive(configId);
+        LlmConfigRecord cfg = llmConfigRepository.requireActive(configId, LlmConfigRecord.KIND_CHAT);
         String apiKey = resolveApiKey(cfg);
         if (!StringUtils.hasText(apiKey) || "CHANGE_ME".equals(apiKey)) {
             throw new WujiException(ErrorCode.MODEL_UNAVAILABLE,
                     "LLM API Key 未配置，请更新 llm_config 或设置环境变量 WUJI_LLM_API_KEY");
         }
-        OpenAiApi openAiApi = OpenAiApi.builder()
+        OpenAiApi.Builder apiBuilder = OpenAiApi.builder()
                 .baseUrl(cfg.getBaseUrl())
-                .apiKey(apiKey)
-                .build();
+                .apiKey(apiKey);
+        String completionsPath = LlmExtraJson.text(cfg.getExtraJson(), "chat_completions_path");
+        if (StringUtils.hasText(completionsPath)) {
+            apiBuilder.completionsPath(completionsPath);
+        }
+        OpenAiApi openAiApi = apiBuilder.build();
         OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder()
                 .model(cfg.getModel());
         if (cfg.getTemperature() != null) {
@@ -102,7 +106,7 @@ public class LlmClientFactory {
                 .defaultOptions(optionsBuilder.build())
                 .build();
         ChatClient chatClient = ChatClient.builder(chatModel).build();
-        log.info("LLM client initialized, configId={}, model={}", configId, cfg.getModel());
+        log.info("LLM client initialized, configId={}, model={}, kind={}", configId, cfg.getModel(), cfg.getModelKind());
         return new CachedClients(cfg, chatModel, chatClient);
     }
 
