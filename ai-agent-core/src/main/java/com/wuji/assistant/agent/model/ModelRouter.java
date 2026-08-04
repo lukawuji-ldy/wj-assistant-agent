@@ -265,6 +265,20 @@ public class ModelRouter {
                 || String.valueOf(t.getMessage()).toLowerCase().contains("timeout")) {
             return ErrorCode.MODEL_TIMEOUT;
         }
+        // 编程/存储类异常勿误标为模型不可用（例如 arraycopy、PG UTF8 NUL）
+        if (hasCause(t, ArrayIndexOutOfBoundsException.class)
+                || hasCause(t, IndexOutOfBoundsException.class)
+                || hasCause(t, org.springframework.dao.DataAccessException.class)
+                || String.valueOf(t.getMessage()).toLowerCase().contains("arraycopy")
+                || String.valueOf(t.getMessage()).contains("UTF8")) {
+            return ErrorCode.INTERNAL_ERROR;
+        }
+        if (status != null && status >= 500) {
+            return ErrorCode.MODEL_UNAVAILABLE;
+        }
+        if (status != null && status >= 400) {
+            return ErrorCode.BAD_REQUEST;
+        }
         return ErrorCode.MODEL_UNAVAILABLE;
     }
 

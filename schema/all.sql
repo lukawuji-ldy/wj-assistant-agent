@@ -20,3 +20,5 @@
 \ir 12_vector_store.sql
 \ir 13_user_semantic_memory.sql
 \ir 14_checkpoint.sql
+\ir 15_memory_extract_prompt.sql
+\ir 16_memory_retrieve_prompt.sql

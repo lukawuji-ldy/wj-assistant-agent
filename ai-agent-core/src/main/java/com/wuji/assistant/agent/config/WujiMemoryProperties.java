@@ -1,5 +1,7 @@
 package com.wuji.assistant.agent.config;
 
+import java.time.Duration;
+
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
@@ -11,6 +13,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class WujiMemoryProperties {
 
     private ShortTerm shortTerm = new ShortTerm();
+    private Router router = new Router();
+    private Retrieve retrieve = new Retrieve();
     private Extract extract = new Extract();
     private Lifecycle lifecycle = new Lifecycle();
 
@@ -29,6 +33,22 @@ public class WujiMemoryProperties {
 
     public void setShort(ShortTerm shortTerm) {
         setShortTerm(shortTerm);
+    }
+
+    public Router getRouter() {
+        return router;
+    }
+
+    public void setRouter(Router router) {
+        this.router = router == null ? new Router() : router;
+    }
+
+    public Retrieve getRetrieve() {
+        return retrieve;
+    }
+
+    public void setRetrieve(Retrieve retrieve) {
+        this.retrieve = retrieve == null ? new Retrieve() : retrieve;
     }
 
     public Extract getExtract() {
@@ -90,12 +110,85 @@ public class WujiMemoryProperties {
     }
 
     /**
+     * 长期记忆 Router（MVP 仅 rule）。
+     */
+    public static class Router {
+        /** rule | hybrid（hybrid 未实现，按 rule 执行） */
+        private String mode = "rule";
+
+        public String getMode() {
+            return mode;
+        }
+
+        public void setMode(String mode) {
+            this.mode = mode == null || mode.isBlank() ? "rule" : mode.trim().toLowerCase();
+        }
+    }
+
+    /**
+     * 长期记忆召回截断与评分权重。
+     */
+    public static class Retrieve {
+        private int topK = 8;
+        private double weightSimilarity = 0.5;
+        private double weightConfidence = 0.2;
+        private double weightFreshness = 0.2;
+        private double weightImportance = 0.2;
+
+        public int getTopK() {
+            return topK;
+        }
+
+        public void setTopK(int topK) {
+            this.topK = topK <= 0 ? 8 : topK;
+        }
+
+        public double getWeightSimilarity() {
+            return weightSimilarity;
+        }
+
+        public void setWeightSimilarity(double weightSimilarity) {
+            this.weightSimilarity = weightSimilarity;
+        }
+
+        public double getWeightConfidence() {
+            return weightConfidence;
+        }
+
+        public void setWeightConfidence(double weightConfidence) {
+            this.weightConfidence = weightConfidence;
+        }
+
+        public double getWeightFreshness() {
+            return weightFreshness;
+        }
+
+        public void setWeightFreshness(double weightFreshness) {
+            this.weightFreshness = weightFreshness;
+        }
+
+        public double getWeightImportance() {
+            return weightImportance;
+        }
+
+        public void setWeightImportance(double weightImportance) {
+            this.weightImportance = weightImportance;
+        }
+    }
+
+    /**
      * L2 提取配置。
      */
     public static class Extract {
         private boolean enabled = true;
         private boolean async = true;
         private boolean explicitDetectEnabled = true;
+        /** rule | llm | hybrid */
+        private String mode = "hybrid";
+        private String systemPromptCode = "memory.extract.system";
+        private String userPromptCode = "memory.extract.user";
+        private Duration timeout = Duration.ofSeconds(20);
+        private double minConfidence = 0.55;
 
         public boolean isEnabled() {
             return enabled;
@@ -119,6 +212,46 @@ public class WujiMemoryProperties {
 
         public void setExplicitDetectEnabled(boolean explicitDetectEnabled) {
             this.explicitDetectEnabled = explicitDetectEnabled;
+        }
+
+        public String getMode() {
+            return mode;
+        }
+
+        public void setMode(String mode) {
+            this.mode = mode == null || mode.isBlank() ? "hybrid" : mode.trim().toLowerCase();
+        }
+
+        public String getSystemPromptCode() {
+            return systemPromptCode;
+        }
+
+        public void setSystemPromptCode(String systemPromptCode) {
+            this.systemPromptCode = systemPromptCode;
+        }
+
+        public String getUserPromptCode() {
+            return userPromptCode;
+        }
+
+        public void setUserPromptCode(String userPromptCode) {
+            this.userPromptCode = userPromptCode;
+        }
+
+        public Duration getTimeout() {
+            return timeout;
+        }
+
+        public void setTimeout(Duration timeout) {
+            this.timeout = timeout == null ? Duration.ofSeconds(20) : timeout;
+        }
+
+        public double getMinConfidence() {
+            return minConfidence;
+        }
+
+        public void setMinConfidence(double minConfidence) {
+            this.minConfidence = minConfidence;
         }
     }
 

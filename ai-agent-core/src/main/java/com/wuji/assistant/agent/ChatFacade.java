@@ -9,11 +9,13 @@ import com.wuji.assistant.agent.config.WujiMemoryProperties;
 import com.wuji.assistant.agent.config.WujiModelProperties;
 import com.wuji.assistant.agent.dto.ChatResult;
 import com.wuji.assistant.agent.dto.ChatStreamRequest;
+import com.wuji.assistant.agent.memory.LlmMemoryExtractOrchestrator;
 import com.wuji.assistant.agent.model.LlmCallAuditor;
 import com.wuji.assistant.agent.model.ModelRouter;
 import com.wuji.assistant.agent.observability.AgentTelemetry;
 import com.wuji.assistant.agent.observability.ChatMdc;
 import com.wuji.assistant.agent.prompt.PromptTemplateService;
+import com.wuji.assistant.agent.prompt.WujiSystemPromptInterceptor;
 import com.wuji.assistant.agent.stream.AgentStreamBridge;
 import com.wuji.assistant.agent.stream.StreamSession;
 import com.wuji.assistant.agent.stream.StreamSessionRegistry;
@@ -29,9 +31,12 @@ import com.wuji.assistant.memory.model.ChatMessage;
 import com.wuji.assistant.memory.model.Conversation;
 import com.wuji.assistant.memory.repo.ChatMessageRepository;
 import com.wuji.assistant.memory.repo.ConversationRepository;
+import com.wuji.assistant.memory.retrieve.LongTermMemoryRetriever;
+import com.wuji.assistant.memory.retrieve.MemoryRetrieveOptions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
@@ -56,6 +61,8 @@ import java.util.concurrent.atomic.AtomicReference;
 @Service
 public class ChatFacade {
 
+    private static final Logger log = LoggerFactory.getLogger(ChatFacade.class);
+
     private final ConversationRepository conversationRepository;
     private final ChatMessageRepository chatMessageRepository;
     private final ShortTermMemoryService shortTermMemoryService;
@@ -67,6 +74,8 @@ public class ChatFacade {
     private final WujiAgentProperties agentProperties;
     private final WujiMemoryProperties memoryProperties;
     private final MemoryExtractService memoryExtractService;
+    private final LlmMemoryExtractOrchestrator memoryExtractOrchestrator;
+    private final LongTermMemoryRetriever longTermMemoryRetriever;
     private final SummaryService summaryService;
     private final StreamSessionRegistry streamSessionRegistry;
     private final ObjectMapper objectMapper;
@@ -83,6 +92,8 @@ public class ChatFacade {
                       WujiAgentProperties agentProperties,
                       WujiMemoryProperties memoryProperties,
                       MemoryExtractService memoryExtractService,
+                      LlmMemoryExtractOrchestrator memoryExtractOrchestrator,
+                      LongTermMemoryRetriever longTermMemoryRetriever,
                       SummaryService summaryService,
                       StreamSessionRegistry streamSessionRegistry,
                       ObjectMapper objectMapper,
@@ -98,6 +109,8 @@ public class ChatFacade {
         this.agentProperties = agentProperties;
         this.memoryProperties = memoryProperties;
         this.memoryExtractService = memoryExtractService;
+        this.memoryExtractOrchestrator = memoryExtractOrchestrator;
+        this.longTermMemoryRetriever = longTermMemoryRetriever;
         this.summaryService = summaryService;
         this.streamSessionRegistry = streamSessionRegistry;
         this.objectMapper = objectMapper;
@@ -263,11 +276,35 @@ public class ChatFacade {
                 Map.of("message", request.message()),
                 request.message());
 
-        List<Message> messages = new ArrayList<>();
-        messages.add(new SystemMessage(systemPrompt));
-        if (StringUtils.hasText(shortTerm.summaryJson())) {
-            messages.add(new SystemMessage("会话摘要（watermark 覆盖范围）:\n" + shortTerm.summaryJson()));
+        if (memoryProperties.getRouter() != null
+                && !"rule".equalsIgnoreCase(memoryProperties.getRouter().getMode())) {
+            log.debug("memory router mode={} not implemented; using rule",
+                    memoryProperties.getRouter().getMode());
         }
+        WujiMemoryProperties.Retrieve retrieveCfg = memoryProperties.getRetrieve() == null
+                ? new WujiMemoryProperties.Retrieve()
+                : memoryProperties.getRetrieve();
+        MemoryRetrieveOptions retrieveOptions = new MemoryRetrieveOptions(
+                retrieveCfg.getTopK(),
+                retrieveCfg.getWeightSimilarity(),
+                retrieveCfg.getWeightConfidence(),
+                retrieveCfg.getWeightFreshness(),
+                retrieveCfg.getWeightImportance());
+        String longTermBlock = longTermMemoryRetriever.retrieveBlock(
+                userId, request.message(), retrieveOptions);
+        // 合并进主 system（经 RunnableConfig metadata 注入，禁止再塞进 messages 以免 Append 累积）
+        if (StringUtils.hasText(longTermBlock)) {
+            systemPrompt = systemPrompt + "\n\n" + longTermBlock;
+            userPrompt = "（说明：句中「我」指当前登录用户，请依据上文「已知用户长期记忆」回答其偏好/画像，禁止当作询问助手自身。）\n"
+                    + userPrompt;
+            log.info("memory inject into system, userId={}, chars={}", userId, longTermBlock.length());
+        }
+        if (StringUtils.hasText(shortTerm.summaryJson())) {
+            systemPrompt = systemPrompt + "\n\n会话摘要（watermark 覆盖范围）:\n" + shortTerm.summaryJson();
+        }
+
+        // 仅 user/assistant 进入 ReactAgent messages；system 走 metadata → WujiSystemPromptInterceptor
+        List<Message> messages = new ArrayList<>();
         for (ChatMessage m : history) {
             if ("user".equalsIgnoreCase(m.getRole())) {
                 messages.add(new UserMessage(m.getContent()));
@@ -452,6 +489,8 @@ public class ChatFacade {
         String errCode = mapped.getCode();
         String msg = ex.getMessage() == null ? mapped.getMessage() : ex.getMessage();
         boolean retryable = mapped != ErrorCode.AGENT_MAX_ITERATIONS && modelRouter.isRetryable(ex);
+        log.error("chat stream failed messageId={} code={} deltaSent={} attempt={}: {}",
+                ctx.assistantMsg().getMessageId(), errCode, deltaSent, attempt, msg, ex);
 
         Mono<Void> auditFail = Mono.fromRunnable(() -> llmCallAuditor.record(new LlmCallAuditor.AuditParams(
                 ctx.traceId(),
@@ -504,7 +543,7 @@ public class ChatFacade {
         if (memoryProperties.getExtract() == null || !memoryProperties.getExtract().isEnabled()) {
             return;
         }
-        Runnable task = () -> memoryExtractService.extractAsync(
+        Runnable task = () -> memoryExtractOrchestrator.extractAsync(
                 ctx.conversation().getConversationId(),
                 ctx.assistantMsg().getMessageId(),
                 ctx.userId(),
@@ -529,9 +568,10 @@ public class ChatFacade {
     }
 
     private static RunnableConfig runnableConfig(StreamContext ctx) {
-        // Checkpoint thread_name = userId:conversationId；可见历史仍来自 chat_message
+        // Checkpoint thread = userId:conversationId；system 经 metadata 注入，避免 Append 累积 SystemMessage
         return RunnableConfig.builder()
                 .threadId(ctx.userId() + ":" + ctx.conversation().getConversationId())
+                .addMetadata(WujiSystemPromptInterceptor.META_SYSTEM_PROMPT, ctx.systemPrompt())
                 .build();
     }
 

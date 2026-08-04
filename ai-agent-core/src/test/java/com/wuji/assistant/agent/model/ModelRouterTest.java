@@ -153,6 +153,16 @@ class ModelRouterTest {
     }
 
     @Test
+    void mapErrorCode_arraycopyAndUtf8AreInternalNotModelUnavailable() {
+        assertEquals(ErrorCode.INTERNAL_ERROR,
+                modelRouter.mapErrorCode(new ArrayIndexOutOfBoundsException(
+                        "arraycopy: last destination index 22 out of bounds for byte[16]")));
+        assertEquals(ErrorCode.INTERNAL_ERROR,
+                modelRouter.mapErrorCode(new RuntimeException(
+                        "PreparedStatementCallback; 无效的 \"UTF8\" 编码字节顺序: 0x00")));
+    }
+
+    @Test
     void orderedConfigIds_dedupes() {
         modelProperties.setFallbackConfigIds(List.of("llm_primary", "llm_backup_1", "llm_backup_1"));
         assertEquals(List.of("llm_primary", "llm_backup_1"), modelRouter.orderedConfigIds());

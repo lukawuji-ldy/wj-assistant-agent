@@ -9,6 +9,7 @@ import com.alibaba.cloud.ai.graph.checkpoint.BaseCheckpointSaver;
 import com.wuji.assistant.agent.checkpoint.CheckpointSaverFactory;
 import com.wuji.assistant.agent.config.WujiAgentProperties;
 import com.wuji.assistant.agent.model.LlmClientFactory;
+import com.wuji.assistant.agent.prompt.WujiSystemPromptInterceptor;
 import com.wuji.assistant.agent.tool.BuiltinToolProvider;
 import com.wuji.assistant.agent.tool.McpToolProvider;
 import com.wuji.assistant.agent.tool.RagToolProvider;
@@ -126,7 +127,8 @@ public class AgentFactory {
                 .name(agentName)
                 .model(chatModel)
                 .saver(saver)
-                .hooks(modelLimit, toolLimit);
+                .hooks(modelLimit, toolLimit)
+                .interceptors(new WujiSystemPromptInterceptor());
         if (!tools.isEmpty()) {
             builder.tools(tools);
         }

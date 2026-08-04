@@ -103,10 +103,23 @@ wuji:
       max-token: 8000
       compress-message-threshold: 30
       keep-recent-messages: 10
+    router:
+      mode: rule
+    retrieve:
+      top-k: 8
+      weight-similarity: 0.5
+      weight-confidence: 0.2
+      weight-freshness: 0.2
+      weight-importance: 0.2
     extract:
       enabled: true
       async: true
       explicit-detect-enabled: true
+      mode: hybrid
+      system-prompt-code: memory.extract.system
+      user-prompt-code: memory.extract.user
+      timeout: 20s
+      min-confidence: 0.55
     lifecycle:
       consolidate-enabled: true
       consolidate-cron: "0 0 3 * * ?"
