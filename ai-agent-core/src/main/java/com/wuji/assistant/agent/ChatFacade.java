@@ -276,11 +276,6 @@ public class ChatFacade {
                 Map.of("message", request.message()),
                 request.message());
 
-        if (memoryProperties.getRouter() != null
-                && !"rule".equalsIgnoreCase(memoryProperties.getRouter().getMode())) {
-            log.debug("memory router mode={} not implemented; using rule",
-                    memoryProperties.getRouter().getMode());
-        }
         WujiMemoryProperties.Retrieve retrieveCfg = memoryProperties.getRetrieve() == null
                 ? new WujiMemoryProperties.Retrieve()
                 : memoryProperties.getRetrieve();
@@ -289,7 +284,10 @@ public class ChatFacade {
                 retrieveCfg.getWeightSimilarity(),
                 retrieveCfg.getWeightConfidence(),
                 retrieveCfg.getWeightFreshness(),
-                retrieveCfg.getWeightImportance());
+                retrieveCfg.getWeightImportance(),
+                retrieveCfg.isSemanticEnabled(),
+                retrieveCfg.getSemanticTopK(),
+                retrieveCfg.getSemanticMinScore());
         String longTermBlock = longTermMemoryRetriever.retrieveBlock(
                 userId, request.message(), retrieveOptions);
         // 合并进主 system（经 RunnableConfig metadata 注入，禁止再塞进 messages 以免 Append 累积）

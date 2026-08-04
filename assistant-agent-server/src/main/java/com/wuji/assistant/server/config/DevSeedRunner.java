@@ -112,6 +112,10 @@ public class DevSeedRunner implements ApplicationRunner {
                 MEMORY_EXTRACT_SYSTEM, now);
         upsertPrompt(11L, "memory.extract.user", "记忆抽取用户提示词", "USER",
                 MEMORY_EXTRACT_USER, now);
+        upsertPrompt(12L, "memory.retrieve.router.system", "记忆检索路由系统提示词", "SYSTEM",
+                MEMORY_RETRIEVE_ROUTER_SYSTEM, now);
+        upsertPrompt(13L, "memory.retrieve.router.user", "记忆检索路由用户提示词", "USER",
+                MEMORY_RETRIEVE_ROUTER_USER, now);
     }
 
     /**
@@ -172,6 +176,29 @@ public class DevSeedRunner implements ApplicationRunner {
 
             助手回复:
             {{assistant_text}}
+            """;
+
+    private static final String MEMORY_RETRIEVE_ROUTER_SYSTEM = """
+            你是企业助手的长期记忆路由判定器。根据用户本轮问句，判断是否需要加载该用户的长期记忆。
+            只输出 JSON（不要 markdown 解释），schema：
+            {"needMemory":true|false,"memoryTypes":["PROFILE"|"PREFERENCE"|"SEMANTIC"]}
+
+            类型含义：
+            - PROFILE：身份/画像（姓名、家乡、职业、目标等）
+            - PREFERENCE：偏好/习惯（颜色、食物、爱好、回答风格等）
+            - SEMANTIC：叙述性经历/往事（「还记得吗」「我说过」「上次」等）
+
+            规则：
+            1) 纯知识问答（如「什么是 Redis」「如何安装 Docker」）→ needMemory=false，memoryTypes=[]
+            2) 「我喜欢什么颜色 / 我的爱好」→ PREFERENCE
+            3) 「我是谁 / 我叫什么 / 我的家乡」→ PROFILE
+            4) 「你还记得我说过… / 上次那件事」→ SEMANTIC
+            5) 可同时返回多种类型；无把握时 needMemory=false
+            """;
+
+    private static final String MEMORY_RETRIEVE_ROUTER_USER = """
+            用户问句:
+            {{query}}
             """;
 
     private void seedRagSample() {

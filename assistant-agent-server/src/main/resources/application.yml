@@ -104,13 +104,19 @@ wuji:
       compress-message-threshold: 30
       keep-recent-messages: 10
     router:
-      mode: rule
+      mode: rule          # rule | hybrid（hybrid 失败降级 rule）
+      timeout: 2s
+      system-prompt-code: memory.retrieve.router.system
+      user-prompt-code: memory.retrieve.router.user
     retrieve:
       top-k: 8
       weight-similarity: 0.5
       weight-confidence: 0.2
       weight-freshness: 0.2
       weight-importance: 0.2
+      semantic-enabled: true
+      semantic-top-k: 4
+      semantic-min-score: 0.55
     extract:
       enabled: true
       async: true

@@ -110,11 +110,14 @@ public class WujiMemoryProperties {
     }
 
     /**
-     * 长期记忆 Router（MVP 仅 rule）。
+     * 长期记忆 Router：rule | hybrid（hybrid 失败降级 rule）。
      */
     public static class Router {
-        /** rule | hybrid（hybrid 未实现，按 rule 执行） */
+        /** rule | hybrid */
         private String mode = "rule";
+        private Duration timeout = Duration.ofSeconds(2);
+        private String systemPromptCode = "memory.retrieve.router.system";
+        private String userPromptCode = "memory.retrieve.router.user";
 
         public String getMode() {
             return mode;
@@ -122,6 +125,30 @@ public class WujiMemoryProperties {
 
         public void setMode(String mode) {
             this.mode = mode == null || mode.isBlank() ? "rule" : mode.trim().toLowerCase();
+        }
+
+        public Duration getTimeout() {
+            return timeout;
+        }
+
+        public void setTimeout(Duration timeout) {
+            this.timeout = timeout == null ? Duration.ofSeconds(2) : timeout;
+        }
+
+        public String getSystemPromptCode() {
+            return systemPromptCode;
+        }
+
+        public void setSystemPromptCode(String systemPromptCode) {
+            this.systemPromptCode = systemPromptCode;
+        }
+
+        public String getUserPromptCode() {
+            return userPromptCode;
+        }
+
+        public void setUserPromptCode(String userPromptCode) {
+            this.userPromptCode = userPromptCode;
         }
     }
 
@@ -134,6 +161,9 @@ public class WujiMemoryProperties {
         private double weightConfidence = 0.2;
         private double weightFreshness = 0.2;
         private double weightImportance = 0.2;
+        private boolean semanticEnabled = true;
+        private int semanticTopK = 4;
+        private double semanticMinScore = 0.55;
 
         public int getTopK() {
             return topK;
@@ -173,6 +203,30 @@ public class WujiMemoryProperties {
 
         public void setWeightImportance(double weightImportance) {
             this.weightImportance = weightImportance;
+        }
+
+        public boolean isSemanticEnabled() {
+            return semanticEnabled;
+        }
+
+        public void setSemanticEnabled(boolean semanticEnabled) {
+            this.semanticEnabled = semanticEnabled;
+        }
+
+        public int getSemanticTopK() {
+            return semanticTopK;
+        }
+
+        public void setSemanticTopK(int semanticTopK) {
+            this.semanticTopK = semanticTopK <= 0 ? 4 : semanticTopK;
+        }
+
+        public double getSemanticMinScore() {
+            return semanticMinScore;
+        }
+
+        public void setSemanticMinScore(double semanticMinScore) {
+            this.semanticMinScore = semanticMinScore;
         }
     }
 
