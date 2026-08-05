@@ -12,6 +12,7 @@ import reactor.test.StepVerifier;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -39,6 +40,27 @@ class McpApiKeyWebFilterTest {
 
         StepVerifier.create(filter.filter(exchange, chain)).verifyComplete();
         assertTrue(continued.get());
+    }
+
+    @Test
+    void enabled_nonMcpPath_passesWithoutKey() {
+        McpAuthProperties props = new McpAuthProperties();
+        props.setEnabled(true);
+        props.setApiKey("secret");
+        McpApiKeyWebFilter filter = new McpApiKeyWebFilter(props);
+
+        AtomicBoolean continued = new AtomicBoolean(false);
+        WebFilterChain chain = exchange -> {
+            continued.set(true);
+            return Mono.empty();
+        };
+
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/actuator/health").build());
+
+        StepVerifier.create(filter.filter(exchange, chain)).verifyComplete();
+        assertTrue(continued.get());
+        assertNull(exchange.getResponse().getStatusCode());
     }
 
     @Test

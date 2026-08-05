@@ -1,6 +1,7 @@
 package com.wuji.assistant.memory;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wuji.assistant.common.util.PostgresText;
 import com.wuji.assistant.memory.model.ChatMessage;
 import com.wuji.assistant.memory.model.Conversation;
 import com.wuji.assistant.memory.repo.ChatMessageRepository;
@@ -84,13 +85,16 @@ public class SummaryService {
                 Map<String, Object> old = objectMapper.readValue(oldSummaryJson, Map.class);
                 Object g = old.get("goal");
                 if (g != null) {
-                    goal = String.valueOf(g);
+                    goal = PostgresText.sanitize(String.valueOf(g));
                 }
                 Object f = old.get("facts");
                 if (f instanceof List<?> list) {
                     for (Object o : list) {
                         if (o != null && facts.size() < 20) {
-                            facts.add(String.valueOf(o));
+                            String fact = PostgresText.sanitize(String.valueOf(o));
+                            if (StringUtils.hasText(fact)) {
+                                facts.add(fact);
+                            }
                         }
                     }
                 }
@@ -98,7 +102,10 @@ public class SummaryService {
                 if (p instanceof List<?> list) {
                     for (Object o : list) {
                         if (o != null && pending.size() < 10) {
-                            pending.add(String.valueOf(o));
+                            String task = PostgresText.sanitize(String.valueOf(o));
+                            if (StringUtils.hasText(task)) {
+                                pending.add(task);
+                            }
                         }
                     }
                 }
@@ -111,7 +118,11 @@ public class SummaryService {
             if (m.getContent() == null || m.getContent().isBlank()) {
                 continue;
             }
-            String snippet = m.getContent().trim();
+            // 历史脏数据或未清洗路径可能仍含 NUL；摘要落库 / 再入模审计均需可安全序列化
+            String snippet = PostgresText.sanitize(m.getContent()).trim();
+            if (snippet.isBlank()) {
+                continue;
+            }
             if (snippet.length() > 120) {
                 snippet = snippet.substring(0, 120);
             }
@@ -126,6 +137,6 @@ public class SummaryService {
         summary.put("facts", facts);
         summary.put("decisions", List.of());
         summary.put("pending_tasks", pending);
-        return objectMapper.writeValueAsString(summary);
+        return PostgresText.sanitizeJson(objectMapper.writeValueAsString(summary));
     }
 }

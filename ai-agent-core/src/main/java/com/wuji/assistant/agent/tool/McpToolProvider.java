@@ -5,7 +5,7 @@ import org.springframework.ai.tool.ToolCallback;
 import java.util.List;
 
 /**
- * MCP 工具提供者（本期空壳，下期接 MCP Client 发现）。
+ * MCP 工具提供者 SPI。启用时由 {@link ClientMcpToolProvider} 实现；关闭时为 {@link EmptyMcpToolProvider}。
  *
  * @author liudy
  */

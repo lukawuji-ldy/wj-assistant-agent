@@ -2,7 +2,6 @@ package com.wuji.assistant.server.mcp;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wuji.assistant.agent.config.WujiMcpProperties;
-import io.modelcontextprotocol.client.transport.WebFluxSseClientTransport;
 import io.modelcontextprotocol.json.jackson.JacksonMcpJsonMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,6 +28,7 @@ public class McpClientTransportConfiguration {
 
     /**
      * 覆盖 yaml sse.connections：单一来源为 {@code wuji.mcp.server-url} + auth。
+     * 使用 {@link WujiWebFluxSseClientTransport} 容忍 SSE 重连重复 endpoint。
      *
      * @param mcpProperties MCP 配置
      * @param objectMapper  JSON
@@ -49,12 +49,12 @@ public class McpClientTransportConfiguration {
         String endpoint = StringUtils.hasText(mcpProperties.getSseEndpoint())
                 ? mcpProperties.getSseEndpoint()
                 : "/sse";
-        var transport = WebFluxSseClientTransport.builder(builder)
-                .sseEndpoint(endpoint)
-                .jsonMapper(new JacksonMcpJsonMapper(objectMapper))
-                .build();
-        log.info("MCP SSE transport ready url={} authEnabled={}",
-                mcpProperties.getServerUrl(), mcpProperties.getAuth().isEnabled());
+        var transport = new WujiWebFluxSseClientTransport(
+                builder, new JacksonMcpJsonMapper(objectMapper), endpoint);
+        log.info("MCP SSE transport ready url={} authEnabled={} transport={}",
+                mcpProperties.getServerUrl(),
+                mcpProperties.getAuth().isEnabled(),
+                transport.getClass().getSimpleName());
         return List.of(new NamedClientMcpTransport("wuji-mcp", transport));
     }
 }

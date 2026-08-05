@@ -3,6 +3,7 @@ package com.wuji.assistant.memory.repo;
 import com.wuji.assistant.common.exception.ErrorCode;
 import com.wuji.assistant.common.exception.WujiException;
 import com.wuji.assistant.common.util.IdGenerator;
+import com.wuji.assistant.common.util.PostgresText;
 import com.wuji.assistant.memory.model.Conversation;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
@@ -169,13 +170,15 @@ public class ConversationRepository {
     public void updateSummary(String conversationId, String summaryJson,
                               OffsetDateTime untilTime, String untilMessageId) {
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+        // PG text 拒绝真实 NUL；若摘要 JSON 含 U+0000 或 \u0000 转义，UPDATE 会失败
+        String safeSummary = PostgresText.sanitizeJson(summaryJson);
         jdbcTemplate.update("""
                 UPDATE conversation
                 SET summary = ?, summary_until_time = ?, summary_until_message_id = ?,
                     summary_compressed_at = ?
                 WHERE conversation_id = ?
                 """,
-                summaryJson,
+                safeSummary,
                 untilTime == null ? null : Timestamp.from(untilTime.toInstant()),
                 untilMessageId,
                 Timestamp.from(now.toInstant()),

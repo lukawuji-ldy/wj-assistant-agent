@@ -96,13 +96,8 @@ public class ChatMessageRepository {
      * @return 可安全写入 PG 的正文（null → 空串）
      */
     static String sanitizeForPostgres(String content) {
-        if (content == null) {
-            return "";
-        }
-        if (content.indexOf('\u0000') < 0) {
-            return content;
-        }
-        return content.replace("\u0000", "");
+        String sanitized = com.wuji.assistant.common.util.PostgresText.sanitize(content);
+        return sanitized == null ? "" : sanitized;
     }
 
     /**

@@ -22,16 +22,5 @@ public class SampleToolService {
     public String echoPing(@ToolParam(description = "Message to echo") String message) {
         return "pong: " + (message == null ? "" : message);
     }
-
-    /**
-     * 按城市返回 mock 天气。
-     *
-     * @param city 城市名
-     * @return 天气描述
-     */
-    @Tool(name = "get_weather", description = "Get mock weather for a city (sample tool, not live data)")
-    public String getWeather(@ToolParam(description = "City name") String city) {
-        String name = city == null || city.isBlank() ? "unknown" : city.trim();
-        return "Weather in " + name + ": sunny, 25C (mock)";
-    }
 }
+

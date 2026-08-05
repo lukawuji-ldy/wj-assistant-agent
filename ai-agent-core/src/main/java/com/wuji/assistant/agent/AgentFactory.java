@@ -11,12 +11,14 @@ import com.wuji.assistant.agent.config.WujiAgentProperties;
 import com.wuji.assistant.agent.model.LlmClientFactory;
 import com.wuji.assistant.agent.prompt.WujiSystemPromptInterceptor;
 import com.wuji.assistant.agent.tool.BuiltinToolProvider;
+import com.wuji.assistant.agent.tool.McpToolHashChangedEvent;
 import com.wuji.assistant.agent.tool.McpToolProvider;
 import com.wuji.assistant.agent.tool.RagToolProvider;
 import com.wuji.assistant.common.exception.ErrorCode;
 import com.wuji.assistant.common.exception.WujiException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.event.EventListener;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.stereotype.Component;
@@ -79,6 +81,12 @@ public class AgentFactory {
     public void invalidate(String configId) {
         cache.remove(configId);
         log.info("ReactAgent cache invalidated, configId={}", configId);
+    }
+
+    @EventListener
+    public void onMcpToolHashChanged(McpToolHashChangedEvent event) {
+        cache.clear();
+        log.info("ReactAgent cache cleared due to MCP toolHash change: {}", event.toolHash());
     }
 
     /**

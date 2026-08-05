@@ -36,7 +36,8 @@ management:
         include: health,info
   tracing:
     sampling:
-      probability: ${OTEL_TRACES_SAMPLER_ARG:1.0}
+      # 先修改为0.0，不做采样跟踪
+      probability: ${OTEL_TRACES_SAMPLER_ARG:0.0}
   otlp:
     tracing:
       # 无 collector 时导出失败不阻断启动；可用 OTEL_EXPORTER_OTLP_ENDPOINT 覆盖
@@ -91,18 +92,18 @@ wuji:
     min-chunk-length-to-keep: 50
     chapter-split-enabled: true
   mcp:
-    enabled: false
+    enabled: true
     server-url: http://127.0.0.1:8081
     sse-endpoint: /sse
     auth:
-      enabled: ${WUJI_MCP_AUTH_ENABLED:false}
-      api-key: ${WUJI_MCP_API_KEY:}
+      enabled: ${WUJI_MCP_AUTH_ENABLED:true}
+      api-key: ${WUJI_MCP_API_KEY:alibaba}
   memory:
     short:
       max-message-count: 20
       max-token: 8000
       compress-message-threshold: 30
-      keep-recent-messages: 10
+      keep-recent-messages: 5
     router:
       mode: rule          # rule | hybrid（hybrid 失败降级 rule）
       timeout: 2s

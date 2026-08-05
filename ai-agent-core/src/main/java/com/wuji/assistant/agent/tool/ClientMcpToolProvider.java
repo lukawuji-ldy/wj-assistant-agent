@@ -1,20 +1,13 @@
 package com.wuji.assistant.agent.tool;
 
 import com.wuji.assistant.agent.config.WujiMcpProperties;
-import com.wuji.assistant.common.exception.ErrorCode;
-import com.wuji.assistant.common.exception.WujiException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
-
-import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 /**
  * 从 MCP Client 发现的 Tool 转为 ToolCallback。
@@ -22,51 +15,67 @@ import java.util.Set;
  * @author liudy
  */
 @Component
-@ConditionalOnProperty(prefix = "wuji.mcp", name = "enabled", havingValue = "true", matchIfMissing = true)
+@ConditionalOnProperty(prefix = "wuji.mcp", name = "enabled", havingValue = "true", matchIfMissing = false)
 public class ClientMcpToolProvider implements McpToolProvider {
 
     private static final Logger log = LoggerFactory.getLogger(ClientMcpToolProvider.class);
 
-    private final List<ToolCallback> tools;
+    private final McpToolRegistry mcpToolRegistry;
 
-    public ClientMcpToolProvider(ObjectProvider<ToolCallbackProvider> providers,
+    public ClientMcpToolProvider(McpToolRegistry mcpToolRegistry,
                                  WujiMcpProperties mcpProperties) {
-        List<ToolCallback> collected = new ArrayList<>();
-        Set<String> names = new HashSet<>();
-        for (ToolCallbackProvider provider : providers) {
-            if (provider == null) {
-                continue;
+        this.mcpToolRegistry = mcpToolRegistry;
+        log.info("ClientMcpToolProvider initialized, enabled={}, serverUrl={}, includeToolsCount={}",
+                mcpProperties.isEnabled(),
+                mcpProperties.getServerUrl(),
+                mcpProperties.getIncludeTools() == null ? 0 : mcpProperties.getIncludeTools().size());
+    }
+
+    /**
+     * SyncMcpToolCallbackProvider 优先于 Async，其它 MCP Provider 最后。
+     *
+     * @param provider MCP Provider
+     * @return 排序权重（越小越优先）
+     */
+    static int mcpProviderOrder(ToolCallbackProvider provider) {
+        String name = provider.getClass().getName();
+        if (name.contains("SyncMcpToolCallbackProvider")) {
+            return 0;
+        }
+        if (name.contains("AsyncMcpToolCallbackProvider")) {
+            return 1;
+        }
+        return 2;
+    }
+
+    /**
+     * 识别 Spring AI MCP Client 产出的 ToolCallbackProvider，排除本地 RAG/Method 等。
+     *
+     * @param provider 候选 Provider
+     * @return 是否为 MCP 来源
+     */
+    static boolean isMcpProvider(ToolCallbackProvider provider) {
+        Class<?> type = provider.getClass();
+        while (type != null && type != Object.class) {
+            String name = type.getName();
+            if (name.startsWith("org.springframework.ai.mcp")
+                    || name.contains("McpToolCallback")) {
+                return true;
             }
-            String cn = provider.getClass().getName();
-            if (!cn.toLowerCase().contains("mcp")) {
-                continue;
-            }
-            ToolCallback[] callbacks;
-            try {
-                callbacks = provider.getToolCallbacks();
-            } catch (Exception ex) {
-                log.warn("skip MCP provider {}: {}", cn, ex.toString());
-                continue;
-            }
-            if (callbacks == null) {
-                continue;
-            }
-            for (ToolCallback cb : callbacks) {
-                String name = cb.getToolDefinition().name();
-                if (!names.add(name)) {
-                    throw new WujiException(ErrorCode.INTERNAL_ERROR,
-                            "MCP/本地工具重名: " + name);
-                }
-                collected.add(cb);
+            type = type.getSuperclass();
+        }
+        for (Class<?> iface : provider.getClass().getInterfaces()) {
+            String name = iface.getName();
+            if (name.startsWith("org.springframework.ai.mcp")
+                    || name.contains("McpToolCallback")) {
+                return true;
             }
         }
-        this.tools = List.copyOf(collected);
-        log.info("MCP tools loaded, enabled={}, count={}, url={}",
-                mcpProperties.isEnabled(), tools.size(), mcpProperties.getServerUrl());
+        return false;
     }
 
     @Override
     public List<ToolCallback> getTools() {
-        return tools;
+        return mcpToolRegistry.getTools();
     }
 }

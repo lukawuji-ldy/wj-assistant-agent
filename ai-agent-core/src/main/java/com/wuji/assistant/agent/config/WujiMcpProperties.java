@@ -2,6 +2,9 @@ package com.wuji.assistant.agent.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * MCP Client 配置。
  *
@@ -15,6 +18,12 @@ public class WujiMcpProperties {
     private String serverUrl = "http://127.0.0.1:8081";
 
     private String sseEndpoint = "/sse";
+
+    /**
+     * Agent allowlist：只保留白名单内的 MCP tools 注入到 ReactAgent。
+     * 若为空或未配置：保留发现到的全部 tools。
+     */
+    private List<String> includeTools = new ArrayList<>();
 
     private Auth auth = new Auth();
 
@@ -40,6 +49,14 @@ public class WujiMcpProperties {
 
     public void setSseEndpoint(String sseEndpoint) {
         this.sseEndpoint = sseEndpoint;
+    }
+
+    public List<String> getIncludeTools() {
+        return includeTools;
+    }
+
+    public void setIncludeTools(List<String> includeTools) {
+        this.includeTools = includeTools == null ? new ArrayList<>() : includeTools;
     }
 
     public Auth getAuth() {
