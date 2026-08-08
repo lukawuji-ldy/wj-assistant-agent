@@ -1,38 +1,26 @@
-# 无忌助手 · 运营后台（ai-admin-web）
+# ai-admin-web
 
-Vue 3 + Element Plus + Vite。对接 `assistant-agent-server` 的 `/api/admin/**`（Admin JWT）。
+运营后台（npm）：配置与观测控制台，对接 `assistant-agent-server` 的 `/api/admin/**`（Admin JWT，与聊天 User JWT 双轨隔离）。
 
-## 开发
+## 主要功能
 
-```bash
-npm install
-npm run dev
-```
+- **账号与权限**：管理员登录、后台用户管理（`admin_user`）
+- **模型与提示词**：`llm_config` 管理；`prompt_template` 草稿 / 发布 / 回滚 / Diff
+- **知识库**：文档、切分、Chunk / Revision、Embedding 相关运维
+- **记忆**：聊天用户画像与语义记忆管理
+- **MCP**：多 Server 连接（`mcp_server_ref`）、工具绑定 / 启用两态（`mcp_tool_binding`）
+- **观测与审计**：LLM 调用日志、Checkpoint 回放、`admin_audit_log` 只读查询
 
-默认 http://127.0.0.1:5173 ，Vite 将 `/api/admin` 代理到 `http://127.0.0.1:8080`。
+P0–P6 能力已落地；细节与分期见设计文档。
 
-本地默认管理员（`admin_user`，与聊天 `sys_user.admin` 同名不同表）：
+## 技术选型
 
-- 用户名：`admin`
-- 密码：`admin123`
-
-## 已实现页面
-
-| 路由 | 说明 |
+| 项 | 选型 |
 |---|---|
-| `/login` | 管理员登录 |
-| `/users` | 后台用户管理（P0） |
-| `/llm-configs` | LLM 配置（P1） |
-| `/prompts` | 提示词版本（P1） |
-| `/logs/llm-calls` | LLM 调用日志（P2） |
-| `/logs/checkpoints` | Checkpoint 双栏回放 + 明细弹框（P2；服务端解码 state） |
+| 框架 | Vue 3 + TypeScript |
+| UI | Element Plus + `@element-plus/icons-vue` |
+| 工程 | Vite 8、Vue Router、Pinia |
+| HTTP | Axios；开发态 proxy `/api/admin` → `http://127.0.0.1:8080` |
+| 鉴权 | Admin JWT（`Authorization: Bearer`） |
 
-其余菜单（知识库 / 记忆 / MCP）为后续分期占位。
-
-## 构建
-
-```bash
-npm run build
-```
-
-设计与分期见 [docs/admin-design.md](../docs/admin-design.md)。
+设计见 [docs/admin-design.md](../docs/admin-design.md)。
