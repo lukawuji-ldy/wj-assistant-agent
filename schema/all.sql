@@ -13,6 +13,7 @@
 \ir 05_memory_extract_log.sql
 \ir 06_llm_config.sql
 \ir 07_prompt_template.sql
+\ir 20_prompt_template_version.sql
 \ir 08_llm_call_log.sql
 \ir 09_kb_document.sql
 \ir 10_kb_document_version.sql
@@ -22,3 +23,10 @@
 \ir 14_checkpoint.sql
 \ir 15_memory_extract_prompt.sql
 \ir 16_memory_retrieve_prompt.sql
+\ir 17_memory_retrieve_router_prompt.sql
+\ir 18_admin_user.sql
+\ir 19_admin_audit_log.sql
+\ir 21_kb_chunk.sql
+\ir 22_kb_chunk_revision.sql
+-- 可选开发种子（leave policy chunk）；生产可跳过
+-- \ir 25_kb_chunk_seed_leave_policy.sql

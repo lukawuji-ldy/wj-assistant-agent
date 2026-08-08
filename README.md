@@ -12,6 +12,8 @@ AI智能聊天系统
 | `ai-agent-core` | Agent 核心骨架 |
 | `assistant-agent-server` | 主服务（8080），含数据源与 Flyway |
 | `assistant-mcp-server` | MCP 服务骨架（8081） |
+| `wuji-assistant-web` | 聊天前端（Next.js） |
+| `ai-admin-web` | 运营后台（Vue3；**设计已定**见 [docs/admin-design.md](docs/admin-design.md)，编码分期） |
 
 ## 数据库
 

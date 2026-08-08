@@ -33,14 +33,25 @@ public class OpenAiEmbeddingClient implements EmbeddingClient {
     private final LlmConfigRepository llmConfigRepository;
     private final WujiModelProperties modelProperties;
     private final WujiRagProperties ragProperties;
+    private final ApiKeyCipherService apiKeyCipherService;
     private final AtomicReference<EmbeddingModel> cached = new AtomicReference<>();
 
     public OpenAiEmbeddingClient(LlmConfigRepository llmConfigRepository,
                                  WujiModelProperties modelProperties,
-                                 WujiRagProperties ragProperties) {
+                                 WujiRagProperties ragProperties,
+                                 ApiKeyCipherService apiKeyCipherService) {
         this.llmConfigRepository = llmConfigRepository;
         this.modelProperties = modelProperties;
         this.ragProperties = ragProperties;
+        this.apiKeyCipherService = apiKeyCipherService;
+    }
+
+    /**
+     * 使 Embedding 缓存失效，下次重新从库加载。
+     */
+    public void invalidate() {
+        cached.set(null);
+        log.info("EmbeddingModel cache invalidated");
     }
 
     @Override
@@ -63,6 +74,26 @@ public class OpenAiEmbeddingClient implements EmbeddingClient {
             return null;
         }
         return response.getResult().getOutput();
+    }
+
+    @Override
+    public String embeddingConfigId() {
+        String configId = ragProperties.getEmbeddingConfigId();
+        return StringUtils.hasText(configId) ? configId.trim() : "unavailable";
+    }
+
+    @Override
+    public String embeddingModelVersion() {
+        String configId = embeddingConfigId();
+        try {
+            LlmConfigRecord cfg = llmConfigRepository.requireActive(configId, LlmConfigRecord.KIND_EMBEDDING);
+            String model = StringUtils.hasText(cfg.getModel()) ? cfg.getModel().trim() : "unknown";
+            Integer dims = LlmExtraJson.integer(cfg.getExtraJson(), "dimensions");
+            String dimPart = dims == null ? "1536" : String.valueOf(dims);
+            return configId + "|" + model + "|" + dimPart;
+        } catch (Exception e) {
+            return configId + "|unknown|1536";
+        }
     }
 
     private EmbeddingModel model() {
@@ -111,10 +142,6 @@ public class OpenAiEmbeddingClient implements EmbeddingClient {
         if (StringUtils.hasText(modelProperties.getApiKeyOverride())) {
             return modelProperties.getApiKeyOverride().trim();
         }
-        String cipher = cfg.getApiKeyCipher();
-        if (cipher == null) {
-            return "";
-        }
-        return cipher.startsWith("enc:") ? cipher.substring(4) : cipher;
+        return apiKeyCipherService.decrypt(cfg.getApiKeyCipher());
     }
 }

@@ -5,12 +5,15 @@ CREATE TABLE IF NOT EXISTS kb_document_version
     doc_id        VARCHAR(64)  NOT NULL,
     version       VARCHAR(32)  NOT NULL,
     status        VARCHAR(20)  NOT NULL,
-    source        VARCHAR(500),
-    acl_roles     JSONB        NOT NULL,
-    published_at  TIMESTAMPTZ,
-    deprecated_at TIMESTAMPTZ,
-    create_time   TIMESTAMPTZ  NOT NULL,
-    update_time   TIMESTAMPTZ  NOT NULL,
+    source         VARCHAR(500),
+    acl_roles                JSONB        NOT NULL,
+    ingest_options           JSONB,
+    embedding_config_id      VARCHAR(64),
+    embedding_model_version  VARCHAR(256),
+    published_at             TIMESTAMPTZ,
+    deprecated_at            TIMESTAMPTZ,
+    create_time              TIMESTAMPTZ  NOT NULL,
+    update_time              TIMESTAMPTZ  NOT NULL,
     CONSTRAINT uk_kb_doc_version UNIQUE (doc_id, version)
 );
 
@@ -28,6 +31,9 @@ COMMENT ON COLUMN kb_document_version.version IS '版本号，如 v3';
 COMMENT ON COLUMN kb_document_version.status IS 'DRAFT|ACTIVE|DEPRECATED';
 COMMENT ON COLUMN kb_document_version.source IS '来源文件或 URI';
 COMMENT ON COLUMN kb_document_version.acl_roles IS '可见角色列表 JSON';
+COMMENT ON COLUMN kb_document_version.ingest_options IS '入库参数 JSON：chunkSize/overlap/minChunkLengthToKeep/chapterSplitEnabled/sourceFile/parser';
+COMMENT ON COLUMN kb_document_version.embedding_config_id IS '当前该版本向量所用 llm_config.config_id';
+COMMENT ON COLUMN kb_document_version.embedding_model_version IS '指纹 config_id|model|dimensions';
 COMMENT ON COLUMN kb_document_version.published_at IS '发布时间';
 COMMENT ON COLUMN kb_document_version.deprecated_at IS '停用时间';
 COMMENT ON COLUMN kb_document_version.create_time IS '创建时间';

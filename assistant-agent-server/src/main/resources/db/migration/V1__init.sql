@@ -327,16 +327,17 @@ COMMENT ON COLUMN kb_document.update_time IS '更新时间';
 -- 知识库文档版本
 CREATE TABLE IF NOT EXISTS kb_document_version
 (
-    id            BIGINT       PRIMARY KEY,
-    doc_id        VARCHAR(64)  NOT NULL,
-    version       VARCHAR(32)  NOT NULL,
-    status        VARCHAR(20)  NOT NULL,
-    source        VARCHAR(500),
-    acl_roles     JSONB        NOT NULL,
-    published_at  TIMESTAMPTZ,
-    deprecated_at TIMESTAMPTZ,
-    create_time   TIMESTAMPTZ  NOT NULL,
-    update_time   TIMESTAMPTZ  NOT NULL,
+    id             BIGINT       PRIMARY KEY,
+    doc_id         VARCHAR(64)  NOT NULL,
+    version        VARCHAR(32)  NOT NULL,
+    status         VARCHAR(20)  NOT NULL,
+    source         VARCHAR(500),
+    acl_roles      JSONB        NOT NULL,
+    ingest_options JSONB,
+    published_at   TIMESTAMPTZ,
+    deprecated_at  TIMESTAMPTZ,
+    create_time    TIMESTAMPTZ  NOT NULL,
+    update_time    TIMESTAMPTZ  NOT NULL,
     CONSTRAINT uk_kb_doc_version UNIQUE (doc_id, version)
 );
 
@@ -354,6 +355,7 @@ COMMENT ON COLUMN kb_document_version.version IS '版本号，如 v3';
 COMMENT ON COLUMN kb_document_version.status IS 'DRAFT|ACTIVE|DEPRECATED';
 COMMENT ON COLUMN kb_document_version.source IS '来源文件或 URI';
 COMMENT ON COLUMN kb_document_version.acl_roles IS '可见角色列表 JSON';
+COMMENT ON COLUMN kb_document_version.ingest_options IS '入库参数 JSON：chunkSize/overlap/minChunkLengthToKeep/chapterSplitEnabled/sourceFile/parser';
 COMMENT ON COLUMN kb_document_version.published_at IS '发布时间';
 COMMENT ON COLUMN kb_document_version.deprecated_at IS '停用时间';
 COMMENT ON COLUMN kb_document_version.create_time IS '创建时间';
@@ -401,10 +403,12 @@ COMMENT ON COLUMN kb_citation_snapshot.cited_at IS '引用时间';
 -- 企业知识库向量（Spring AI PGVector 兼容，维度默认 1536）
 CREATE TABLE IF NOT EXISTS vector_store
 (
-    id        UUID PRIMARY KEY,
-    content   TEXT,
-    metadata  JSONB,
-    embedding VECTOR(1536)
+    id          UUID PRIMARY KEY,
+    content     TEXT,
+    metadata    JSONB,
+    embedding   VECTOR(1536),
+    chunk_seq   INTEGER,
+    ingested_at TIMESTAMPTZ(3)
 );
 
 DO $$
@@ -421,11 +425,16 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_vector_store_meta_doc
     ON vector_store ((metadata ->> 'doc_id'), (metadata ->> 'status'));
 
+CREATE INDEX IF NOT EXISTS idx_vector_store_version_seq
+    ON vector_store ((metadata ->> 'version_id'), chunk_seq);
+
 COMMENT ON TABLE vector_store IS '企业知识库向量切片表';
 COMMENT ON COLUMN vector_store.id IS '切片主键 UUID';
 COMMENT ON COLUMN vector_store.content IS '片段正文';
-COMMENT ON COLUMN vector_store.metadata IS '元数据 JSON：doc_id/version/section/chunk_id 等';
+COMMENT ON COLUMN vector_store.metadata IS '元数据 JSON：doc_id/version/section/chunk_id/chunk_seq/ingested_at 等';
 COMMENT ON COLUMN vector_store.embedding IS '向量，维度须与 Embedding 模型一致';
+COMMENT ON COLUMN vector_store.chunk_seq IS '同 version 内切分序号（1-based）';
+COMMENT ON COLUMN vector_store.ingested_at IS '入库时间，精度到毫秒';
 
 -- >>> 13_user_semantic_memory.sql
 -- 用户语义长期记忆（与知识库分表）

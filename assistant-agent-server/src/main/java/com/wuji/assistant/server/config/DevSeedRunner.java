@@ -8,11 +8,14 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
+import com.wuji.assistant.common.util.IdGenerator;
+import com.wuji.assistant.rag.ingest.ContentHashes;
+
 import java.sql.Timestamp;
 import java.time.Instant;
 
 /**
- * 本地开发种子：预置 admin 用户、llm_config、prompt_template（Prompt 按 code upsert 升级）。
+ * 本地开发种子：预置 admin 用户、llm_config、prompt_template（Prompt 按 code 发布新版本升级）。
  *
  * @author liudy
  */
@@ -32,6 +35,7 @@ public class DevSeedRunner implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) {
         seedUser();
+        seedAdminUser();
         seedLlm();
         seedPrompt();
         seedRagSample();
@@ -56,6 +60,30 @@ public class DevSeedRunner implements ApplicationRunner {
                 """,
                 1L, "u_admin", "admin", hash, "管理员", "default", "admin", "ACTIVE", now, now);
         log.info("seeded sys_user admin (local password admin123; change in production)");
+    }
+
+    /**
+     * 后台运营账号（admin_user），与聊天 sys_user.admin 同名不同表。
+     */
+    private void seedAdminUser() {
+        Timestamp now = Timestamp.from(Instant.now());
+        String hash = passwordEncoder.encode("admin123");
+        Integer cnt = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM admin_user WHERE username = ?", Integer.class, "admin");
+        if (cnt != null && cnt > 0) {
+            jdbcTemplate.update(
+                    "UPDATE admin_user SET password_hash = ?, update_time = ? WHERE username = ? AND is_builtin = TRUE",
+                    hash, now, "admin");
+            log.info("refreshed local admin_user password hash (console admin)");
+            return;
+        }
+        jdbcTemplate.update("""
+                INSERT INTO admin_user
+                (id, admin_id, username, password_hash, display_name, role, status, is_builtin, create_time, update_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                1L, "a_admin", "admin", hash, "超级管理员", "SUPER_ADMIN", "ACTIVE", true, now, now);
+        log.info("seeded admin_user admin (local password admin123; change in production)");
     }
 
     private void seedLlm() {
@@ -119,27 +147,57 @@ public class DevSeedRunner implements ApplicationRunner {
     }
 
     /**
-     * 不存在则插入；已存在则按 code 覆盖 content（保证本地已有行也能吃到约定升级）。
+     * 不存在则插入主表 + PUBLISHED v1；已存在且 content 不同则追加新 PUBLISHED 版本并刷新主表。
      */
     private void upsertPrompt(long id, String code, String name, String role, String content, Timestamp now) {
         Integer cnt = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM prompt_template WHERE code = ?", Integer.class, code);
-        if (cnt != null && cnt > 0) {
+        if (cnt == null || cnt == 0) {
             jdbcTemplate.update("""
-                    UPDATE prompt_template
-                    SET content = ?, name = ?, role = ?, version = version + 1,
-                        status = 'ACTIVE', update_time = ?
-                    WHERE code = ?
-                    """, content, name, role, now, code);
-            log.info("upgraded prompt_template {}", code);
+                    INSERT INTO prompt_template
+                    (id, code, name, role, content, published_version, status, create_time, update_time)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    id, code, name, role, content, 1, "ACTIVE", now, now);
+            jdbcTemplate.update("""
+                    INSERT INTO prompt_template_version
+                    (id, code, version, name, role, content, status, change_note, created_by, create_time, publish_time)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    id, code, 1, name, role, content, "PUBLISHED", "seed", "system", now, now);
+            log.info("seeded prompt_template {}", code);
             return;
         }
+
+        String current = jdbcTemplate.query("""
+                SELECT content FROM prompt_template WHERE code = ?
+                """, (rs, rowNum) -> rs.getString("content"), code).stream().findFirst().orElse(null);
+        if (content.equals(current)) {
+            return;
+        }
+
+        Integer maxVer = jdbcTemplate.queryForObject(
+                "SELECT COALESCE(MAX(version), 0) FROM prompt_template_version WHERE code = ?",
+                Integer.class, code);
+        int nextVersion = maxVer == null ? 1 : maxVer + 1;
+        long verId = IdGenerator.nextLong();
+
         jdbcTemplate.update("""
-                INSERT INTO prompt_template (id, code, name, role, content, version, status, create_time, update_time)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                UPDATE prompt_template_version SET status = 'SUPERSEDED'
+                WHERE code = ? AND status = 'PUBLISHED'
+                """, code);
+        jdbcTemplate.update("""
+                INSERT INTO prompt_template_version
+                (id, code, version, name, role, content, status, change_note, created_by, create_time, publish_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                id, code, name, role, content, 1, "ACTIVE", now, now);
-        log.info("seeded prompt_template {}", code);
+                verId, code, nextVersion, name, role, content, "PUBLISHED", "seed-upgrade", "system", now, now);
+        jdbcTemplate.update("""
+                UPDATE prompt_template
+                SET content = ?, name = ?, role = ?, published_version = ?, status = 'ACTIVE', update_time = ?
+                WHERE code = ?
+                """, content, name, role, nextVersion, now, code);
+        log.info("upgraded prompt_template {} -> v{}", code, nextVersion);
     }
 
     private static final String AGENT_DEFAULT_SYSTEM = """
@@ -204,9 +262,13 @@ public class DevSeedRunner implements ApplicationRunner {
     private void seedRagSample() {
         Integer cnt = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM kb_document WHERE doc_id = ?", Integer.class, "doc_leave_policy");
-        if (cnt != null && cnt > 0) {
-            return;
+        if (cnt == null || cnt == 0) {
+            insertLeavePolicyDocument();
         }
+        ensureLeavePolicyChunks();
+    }
+
+    private void insertLeavePolicyDocument() {
         Timestamp now = Timestamp.from(Instant.now());
         jdbcTemplate.update("""
                 INSERT INTO kb_document
@@ -220,20 +282,96 @@ public class DevSeedRunner implements ApplicationRunner {
                 VALUES (?, ?, ?, ?, ?, '["admin","user"]'::jsonb, ?, ?, ?)
                 """,
                 1001L, "doc_leave_policy", "v1", "ACTIVE", "seed://leave-policy", now, now, now);
+    }
+
+    /**
+     * 确保 leave policy 在 kb_chunk / revision 有种子行（embedding 可空 → ILIKE）。
+     */
+    private void ensureLeavePolicyChunks() {
+        if (!tableExists("kb_chunk")) {
+            log.warn("kb_chunk 表不存在，跳过 RAG chunk 种子（请先执行 Flyway V15/V16）");
+            return;
+        }
+        Integer chunkCnt = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM kb_chunk WHERE doc_id = ? AND version_id = ?
+                """, Integer.class, "doc_leave_policy", 1001L);
+        if (chunkCnt != null && chunkCnt > 0) {
+            return;
+        }
+
+        Timestamp now = Timestamp.from(Instant.now());
+        String c1 = "Employees may take annual leave up to 15 days per year. Submit requests in HR portal at least 3 days in advance.";
+        String c2 = "Sick leave requires a medical certificate when absence exceeds 2 consecutive working days.";
+        String h1 = ContentHashes.sha256Hex(c1);
+        String h2 = ContentHashes.sha256Hex(c2);
+        String id1 = "aaaaaaaa-bbbb-cccc-dddd-111111111111";
+        String id2 = "aaaaaaaa-bbbb-cccc-dddd-222222222222";
+
         jdbcTemplate.update("""
-                INSERT INTO vector_store (id, content, metadata, embedding)
-                VALUES (?::uuid, ?, ?::jsonb, NULL)
-                """,
-                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee1",
-                "Employees may take annual leave up to 15 days per year. Submit requests in HR portal at least 3 days in advance.",
-                "{\"doc_id\":\"doc_leave_policy\",\"version\":1,\"section\":\"annual\",\"chunk_id\":\"c1\",\"status\":\"ACTIVE\",\"collection\":\"kb_default\"}");
+                INSERT INTO kb_chunk
+                (chunk_id, version_id, doc_id, collection, chunk_seq, chunk_key,
+                 current_revision, section, summary, status, create_time, update_time)
+                VALUES (?::uuid, ?, ?, ?, ?, ?, 1, ?, ?, 'ACTIVE', ?, ?)
+                ON CONFLICT (chunk_id) DO NOTHING
+                """, id1, 1001L, "doc_leave_policy", "kb_default", 1, "doc_leave_policy_v1_c1",
+                "annual", summaryOf(c1), now, now);
         jdbcTemplate.update("""
-                INSERT INTO vector_store (id, content, metadata, embedding)
-                VALUES (?::uuid, ?, ?::jsonb, NULL)
-                """,
-                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee2",
-                "Sick leave requires a medical certificate when absence exceeds 2 consecutive working days.",
-                "{\"doc_id\":\"doc_leave_policy\",\"version\":1,\"section\":\"sick\",\"chunk_id\":\"c2\",\"status\":\"ACTIVE\",\"collection\":\"kb_default\"}");
-        log.info("seeded kb sample doc_leave_policy + vector_store chunks (embedding null; cosine when Key available, else ILIKE)");
+                INSERT INTO kb_chunk_revision (chunk_id, revision, content, content_hash, status, create_time)
+                VALUES (?::uuid, 1, ?, ?, 'ACTIVE', ?)
+                ON CONFLICT (chunk_id, revision) DO NOTHING
+                """, id1, c1, h1, now);
+        jdbcTemplate.update("""
+                INSERT INTO kb_chunk
+                (chunk_id, version_id, doc_id, collection, chunk_seq, chunk_key,
+                 current_revision, section, summary, status, create_time, update_time)
+                VALUES (?::uuid, ?, ?, ?, ?, ?, 1, ?, ?, 'ACTIVE', ?, ?)
+                ON CONFLICT (chunk_id) DO NOTHING
+                """, id2, 1001L, "doc_leave_policy", "kb_default", 2, "doc_leave_policy_v1_c2",
+                "sick", summaryOf(c2), now, now);
+        jdbcTemplate.update("""
+                INSERT INTO kb_chunk_revision (chunk_id, revision, content, content_hash, status, create_time)
+                VALUES (?::uuid, 1, ?, ?, 'ACTIVE', ?)
+                ON CONFLICT (chunk_id, revision) DO NOTHING
+                """, id2, c2, h2, now);
+
+        Integer vsCnt = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM vector_store WHERE id IN (?::uuid, ?::uuid)
+                """, Integer.class, id1, id2);
+        if (vsCnt == null || vsCnt == 0) {
+            jdbcTemplate.update("""
+                    INSERT INTO vector_store (id, content, metadata, embedding, chunk_seq, ingested_at)
+                    VALUES (?::uuid, ?, ?::jsonb, NULL, 1, ?)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    id1, c1,
+                    "{\"doc_id\":\"doc_leave_policy\",\"version\":\"v1\",\"version_id\":1001,\"section\":\"annual\",\"chunk_id\":\"doc_leave_policy_v1_c1\",\"status\":\"ACTIVE\",\"collection\":\"kb_default\"}",
+                    now);
+            jdbcTemplate.update("""
+                    INSERT INTO vector_store (id, content, metadata, embedding, chunk_seq, ingested_at)
+                    VALUES (?::uuid, ?, ?::jsonb, NULL, 2, ?)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    id2, c2,
+                    "{\"doc_id\":\"doc_leave_policy\",\"version\":\"v1\",\"version_id\":1001,\"section\":\"sick\",\"chunk_id\":\"doc_leave_policy_v1_c2\",\"status\":\"ACTIVE\",\"collection\":\"kb_default\"}",
+                    now);
+        }
+        log.info("seeded kb sample doc_leave_policy chunks (kb_chunk + revision; embedding null → ILIKE)");
+    }
+
+    private boolean tableExists(String tableName) {
+        Integer n = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = ?
+                """, Integer.class, tableName);
+        return n != null && n > 0;
+    }
+
+    /** 与 DocumentIngestService.summaryOf 对齐的本地摘要（避免跨包访问包内方法）。 */
+    private static String summaryOf(String content) {
+        if (content == null) {
+            return "";
+        }
+        String s = content.trim().replace('\n', ' ');
+        return s.length() <= 80 ? s : s.substring(0, 80);
     }
 }

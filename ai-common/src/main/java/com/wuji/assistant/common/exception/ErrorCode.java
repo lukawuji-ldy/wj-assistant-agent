@@ -29,6 +29,8 @@ public enum ErrorCode {
     MCP_TOOL_FAILED("MCP_TOOL_FAILED", "MCP 工具调用失败"),
     /** RAG 不可用 */
     RAG_UNAVAILABLE("RAG_UNAVAILABLE", "知识库不可用"),
+    /** RAG 入库失败 */
+    RAG_INGEST_FAILED("RAG_INGEST_FAILED", "知识库入库失败"),
     /** RAG 拒答 */
     RAG_REFUSED("RAG_REFUSED", "无可靠知识命中"),
     /** 记忆加载失败 */

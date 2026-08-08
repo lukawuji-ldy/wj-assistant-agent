@@ -28,6 +28,7 @@ class OpenAiEmbeddingClientTest {
 
     private WujiModelProperties modelProperties;
     private WujiRagProperties ragProperties;
+    private ApiKeyCipherService apiKeyCipherService;
     private OpenAiEmbeddingClient client;
 
     @BeforeEach
@@ -35,7 +36,10 @@ class OpenAiEmbeddingClientTest {
         modelProperties = new WujiModelProperties();
         ragProperties = new WujiRagProperties();
         ragProperties.setEmbeddingConfigId("llm_embedding");
-        client = new OpenAiEmbeddingClient(llmConfigRepository, modelProperties, ragProperties);
+        com.wuji.assistant.agent.config.WujiSecurityProperties security =
+                new com.wuji.assistant.agent.config.WujiSecurityProperties();
+        apiKeyCipherService = new ApiKeyCipherService(security);
+        client = new OpenAiEmbeddingClient(llmConfigRepository, modelProperties, ragProperties, apiKeyCipherService);
     }
 
     @Test
@@ -48,7 +52,7 @@ class OpenAiEmbeddingClientTest {
     @Test
     void available_falseWhenBlankEmbeddingConfigId() {
         ragProperties.setEmbeddingConfigId("");
-        client = new OpenAiEmbeddingClient(llmConfigRepository, modelProperties, ragProperties);
+        client = new OpenAiEmbeddingClient(llmConfigRepository, modelProperties, ragProperties, apiKeyCipherService);
         assertFalse(client.available());
     }
 

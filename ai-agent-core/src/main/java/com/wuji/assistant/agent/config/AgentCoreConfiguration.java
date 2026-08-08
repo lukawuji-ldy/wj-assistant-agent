@@ -15,7 +15,8 @@ import org.springframework.context.annotation.Configuration;
         WujiAgentProperties.class,
         WujiMcpProperties.class,
         WujiRagProperties.class,
-        WujiMemoryProperties.class
+        WujiMemoryProperties.class,
+        WujiSecurityProperties.class
 })
 public class AgentCoreConfiguration {
 }

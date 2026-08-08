@@ -16,7 +16,6 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Objects;
 import java.util.HexFormat;
 
 /**
@@ -88,7 +87,7 @@ public class McpInfoController {
                 continue;
             }
             ToolDefinition def = cb.getToolDefinition();
-            out.add(ToolDefinitionDigest.from(def));
+            out.add(ToolDefinitionDigest.from(def, objectMapper));
         }
     }
 
@@ -103,12 +102,12 @@ public class McpInfoController {
     }
 
     private record ToolDefinitionDigest(String name, String description, String inputSchema) {
-        static ToolDefinitionDigest from(ToolDefinition def) {
+        static ToolDefinitionDigest from(ToolDefinition def, ObjectMapper objectMapper) {
             String name = safe(def.name());
             String description = safe(def.description());
             String inputSchema = safe(def.inputSchema());
             // inputSchema 本期直接做 JSON 规范化；若无法解析则回退原字符串。
-            inputSchema = normalizeJsonOrFallback(inputSchema);
+            inputSchema = normalizeJsonOrFallback(objectMapper, inputSchema);
             return new ToolDefinitionDigest(name, description, inputSchema);
         }
 
@@ -121,7 +120,7 @@ public class McpInfoController {
         }
     }
 
-    private String normalizeJsonOrFallback(String raw) {
+    private static String normalizeJsonOrFallback(ObjectMapper objectMapper, String raw) {
         if (raw == null || raw.isBlank()) {
             return "{}";
         }

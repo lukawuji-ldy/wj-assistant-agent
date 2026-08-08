@@ -6,11 +6,12 @@ import org.springframework.util.StringUtils;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 从 prompt_template 加载并渲染提示词。
+ * 从 prompt_template 加载并渲染提示词（按 code 进程内缓存线上 ACTIVE 内容；不读版本草稿）。
  *
  * @author liudy
  */
@@ -20,25 +21,41 @@ public class PromptTemplateService {
     private static final Pattern VAR = Pattern.compile("\\{\\{\\s*([a-zA-Z0-9_.-]+)\\s*}}");
 
     private final JdbcTemplate jdbcTemplate;
+    private final ConcurrentHashMap<String, String> contentCache = new ConcurrentHashMap<>();
 
     public PromptTemplateService(JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
     }
 
     /**
-     * 加载指定 code 下 ACTIVE 最新版本内容。
+     * 加载指定 code 线上副本内容（主表 status=ACTIVE；带缓存）。
      *
      * @param code 模板编码
      * @return 模板正文，缺失时返回空串
      */
     public String loadActiveContent(String code) {
-        List<String> list = jdbcTemplate.query("""
-                SELECT content FROM prompt_template
-                WHERE code = ? AND status = 'ACTIVE'
-                ORDER BY version DESC
-                LIMIT 1
-                """, (rs, rowNum) -> rs.getString("content"), code);
-        return list.isEmpty() ? "" : list.get(0);
+        if (!StringUtils.hasText(code)) {
+            return "";
+        }
+        return contentCache.computeIfAbsent(code, this::loadActiveContentFromDb);
+    }
+
+    /**
+     * 使指定 code 缓存失效。
+     *
+     * @param code 模板编码
+     */
+    public void invalidate(String code) {
+        if (StringUtils.hasText(code)) {
+            contentCache.remove(code);
+        }
+    }
+
+    /**
+     * 清空全部提示词缓存。
+     */
+    public void invalidateAll() {
+        contentCache.clear();
     }
 
     /**
@@ -76,5 +93,17 @@ public class PromptTemplateService {
             content = fallback;
         }
         return render(content, vars);
+    }
+
+    private String loadActiveContentFromDb(String code) {
+        if (jdbcTemplate == null) {
+            return "";
+        }
+        List<String> list = jdbcTemplate.query("""
+                SELECT content FROM prompt_template
+                WHERE code = ? AND status = 'ACTIVE'
+                LIMIT 1
+                """, (rs, rowNum) -> rs.getString("content"), code);
+        return list.isEmpty() ? "" : list.get(0);
     }
 }

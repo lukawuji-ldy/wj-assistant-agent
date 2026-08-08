@@ -8,10 +8,10 @@
 | 文件 | 内容 |
 |---|---|
 | `00_extensions.sql` | `CREATE EXTENSION vector` |
-| `01_sys_user.sql` … `16_memory_retrieve_prompt.sql` | 业务表 / 向量表 / Agent Checkpoint（PostgresSaver）/ 记忆抽取与入模 Prompt 种子 |
+| `01_sys_user.sql` … `20_prompt_template_version.sql` | 业务表 / 向量表 / Agent Checkpoint / Prompt 种子与版本表 / admin |
 | `all.sql` | 用 `\ir` 按序串联以上脚本 |
 
-等价迁移：`V1__init.sql` + `V2__agent_checkpoint.sql` + `V3__vector_store_metadata_jsonb.sql` + `V4__llm_config_model_kind.sql`（`llm_config.model_kind` + `llm_embedding` 种子）+ `V5__memory_extract_prompt.sql`（`memory.extract.system` / `memory.extract.user`）+ `V6__memory_retrieve_prompt.sql`（长期记忆入模护栏 + 偏好叶子 key）+ `V7__agent_system_memory_guard.sql`（强化「我」指用户护栏）。
+等价迁移：`V1__init.sql` … `V12__prompt_template_version.sql`（`prompt_template` 每 code 一行 + `prompt_template_version`）。
 
 ## 一键落库
 

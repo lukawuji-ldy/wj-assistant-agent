@@ -27,11 +27,15 @@ public class LlmClientFactory {
 
     private final LlmConfigRepository llmConfigRepository;
     private final WujiModelProperties modelProperties;
+    private final ApiKeyCipherService apiKeyCipherService;
     private final ConcurrentHashMap<String, CachedClients> cache = new ConcurrentHashMap<>();
 
-    public LlmClientFactory(LlmConfigRepository llmConfigRepository, WujiModelProperties modelProperties) {
+    public LlmClientFactory(LlmConfigRepository llmConfigRepository,
+                            WujiModelProperties modelProperties,
+                            ApiKeyCipherService apiKeyCipherService) {
         this.llmConfigRepository = llmConfigRepository;
         this.modelProperties = modelProperties;
+        this.apiKeyCipherService = apiKeyCipherService;
     }
 
     /**
@@ -114,15 +118,7 @@ public class LlmClientFactory {
         if (StringUtils.hasText(modelProperties.getApiKeyOverride())) {
             return modelProperties.getApiKeyOverride().trim();
         }
-        String cipher = cfg.getApiKeyCipher();
-        if (cipher == null) {
-            return "";
-        }
-        // 首期：未加 enc: 前缀时视为明文（仅本地开发）
-        if (cipher.startsWith("enc:")) {
-            return cipher.substring(4);
-        }
-        return cipher;
+        return apiKeyCipherService.decrypt(cfg.getApiKeyCipher());
     }
 
     private record CachedClients(LlmConfigRecord config, ChatModel chatModel, ChatClient chatClient) {

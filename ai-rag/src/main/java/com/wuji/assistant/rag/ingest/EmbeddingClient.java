@@ -17,4 +17,18 @@ public interface EmbeddingClient {
      * @return 向量；不可用返回 null
      */
     float[] embed(String text);
+
+    /**
+     * @return llm_config.config_id（EMBEDDING）；不可用时返回占位
+     */
+    default String embeddingConfigId() {
+        return "unavailable";
+    }
+
+    /**
+     * 指纹：{@code configId|model|dimensions}。
+     */
+    default String embeddingModelVersion() {
+        return "unavailable|unknown|1536";
+    }
 }

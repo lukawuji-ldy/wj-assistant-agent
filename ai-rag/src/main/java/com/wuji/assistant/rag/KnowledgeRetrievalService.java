@@ -11,11 +11,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * 知识库检索：优先余弦；无 Embedding 时降级 ILIKE。
+ * 知识库检索：优先余弦（kb_chunk.embedding）；无 Embedding 时降级 ILIKE。
  *
  * @author liudy
  */
@@ -46,14 +47,6 @@ public class KnowledgeRetrievalService {
         });
     }
 
-    /**
-     * 检索知识片段。
-     *
-     * @param query            查询
-     * @param topK             条数
-     * @param minReliableScore 最低可靠分
-     * @return 结果
-     */
     public RetrievalResult retrieve(String query, int topK, double minReliableScore) {
         if (!StringUtils.hasText(query)) {
             return new RetrievalResult(List.of(), true, "查询为空");
@@ -84,22 +77,30 @@ public class KnowledgeRetrievalService {
         List<RetrievalResult.Hit> hits = new ArrayList<>();
         try {
             jdbcTemplate.query("""
-                            SELECT id::text AS id, content, metadata::text AS metadata,
-                                   (1 - (embedding <=> ?::vector)) AS score
-                            FROM vector_store
-                            WHERE embedding IS NOT NULL
-                              AND COALESCE(metadata ->> 'status', 'ACTIVE') = 'ACTIVE'
-                            ORDER BY embedding <=> ?::vector
+                            SELECT c.chunk_id::text AS chunk_id,
+                                   r.content AS content,
+                                   c.current_revision AS revision,
+                                   r.content_hash AS content_hash,
+                                   c.doc_id, c.collection, c.section, c.summary, c.chunk_key,
+                                   c.version_id, v.version, v.embedding_config_id,
+                                   v.embedding_model_version,
+                                   (1 - (c.embedding <=> ?::vector)) AS score
+                            FROM kb_chunk c
+                            JOIN kb_document_version v ON v.id = c.version_id AND v.status = 'ACTIVE'
+                            JOIN kb_chunk_revision r
+                              ON r.chunk_id = c.chunk_id AND r.revision = c.current_revision AND r.status = 'ACTIVE'
+                            WHERE c.status = 'ACTIVE'
+                              AND c.embedding IS NOT NULL
+                            ORDER BY c.embedding <=> ?::vector
                             LIMIT ?
                             """,
                     rs -> {
                         while (rs.next()) {
-                            hits.add(new RetrievalResult.Hit(
-                                    rs.getString("id"),
+                            hits.add(toHit(
+                                    rs.getString("chunk_id"),
                                     rs.getString("content"),
                                     rs.getDouble("score"),
-                                    parseMeta(rs.getString("metadata"))
-                            ));
+                                    rs));
                         }
                         return null;
                     },
@@ -116,21 +117,29 @@ public class KnowledgeRetrievalService {
         List<RetrievalResult.Hit> hits = new ArrayList<>();
         try {
             jdbcTemplate.query("""
-                            SELECT id::text AS id, content, metadata::text AS metadata
-                            FROM vector_store
-                            WHERE content ILIKE ?
-                              AND COALESCE(metadata ->> 'status', 'ACTIVE') = 'ACTIVE'
-                            ORDER BY length(content) ASC
+                            SELECT c.chunk_id::text AS chunk_id,
+                                   r.content AS content,
+                                   c.current_revision AS revision,
+                                   r.content_hash AS content_hash,
+                                   c.doc_id, c.collection, c.section, c.summary, c.chunk_key,
+                                   c.version_id, v.version, v.embedding_config_id,
+                                   v.embedding_model_version
+                            FROM kb_chunk c
+                            JOIN kb_document_version v ON v.id = c.version_id AND v.status = 'ACTIVE'
+                            JOIN kb_chunk_revision r
+                              ON r.chunk_id = c.chunk_id AND r.revision = c.current_revision AND r.status = 'ACTIVE'
+                            WHERE c.status = 'ACTIVE'
+                              AND r.content ILIKE ?
+                            ORDER BY length(r.content) ASC
                             LIMIT ?
                             """,
                     rs -> {
                         while (rs.next()) {
-                            hits.add(new RetrievalResult.Hit(
-                                    rs.getString("id"),
+                            hits.add(toHit(
+                                    rs.getString("chunk_id"),
                                     rs.getString("content"),
                                     1.0,
-                                    parseMeta(rs.getString("metadata"))
-                            ));
+                                    rs));
                         }
                         return null;
                     },
@@ -142,6 +151,31 @@ public class KnowledgeRetrievalService {
         return hits;
     }
 
+    private RetrievalResult.Hit toHit(String chunkId, String content, double score,
+                                      java.sql.ResultSet rs) throws java.sql.SQLException {
+        Map<String, Object> meta = new LinkedHashMap<>();
+        meta.put("doc_id", rs.getString("doc_id"));
+        meta.put("collection", rs.getString("collection"));
+        meta.put("section", rs.getString("section"));
+        meta.put("summary", rs.getString("summary"));
+        meta.put("chunk_key", rs.getString("chunk_key"));
+        meta.put("version_id", rs.getObject("version_id"));
+        meta.put("version", rs.getString("version"));
+        meta.put("revision", rs.getInt("revision"));
+        meta.put("content_hash", rs.getString("content_hash"));
+        meta.put("status", "ACTIVE");
+        String configId = rs.getString("embedding_config_id");
+        if (StringUtils.hasText(configId)) {
+            meta.put("embedding_config_id", configId);
+        }
+        String modelVersion = rs.getString("embedding_model_version");
+        if (StringUtils.hasText(modelVersion)) {
+            meta.put("embedding_model_version", modelVersion);
+        }
+        return new RetrievalResult.Hit(chunkId, content, score, meta);
+    }
+
+    @SuppressWarnings("unused")
     private Map<String, Object> parseMeta(String json) {
         if (!StringUtils.hasText(json)) {
             return Map.of();

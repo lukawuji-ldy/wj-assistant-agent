@@ -10,13 +10,15 @@ import java.util.regex.Pattern;
 
 /**
  * 中文递归切分：章节硬切 → 段落 → 句读 → 字符。
+ * 按次覆盖请用 {@link #split(String, SplitOptions)}，勿并发改写实例字段。
  *
  * @author liudy
  */
 @Component
 public class ChineseRecursiveTextSplitter implements TextSplitter {
 
-    private static final Pattern CHAPTER = Pattern.compile("(?m)^([一二三四五六七八九十百千]+、|第[一二三四五六七八九十百千\\d]+[章节篇]|\\d+(\\.\\d+)*\\s+)");
+    private static final Pattern CHAPTER = Pattern.compile(
+            "(?m)^([一二三四五六七八九十百千]+、|第[一二三四五六七八九十百千\\d]+[章节篇]|\\d+(\\.\\d+)*\\s+)");
 
     private int chunkSize = 500;
     private int overlap = 80;
@@ -39,17 +41,87 @@ public class ChineseRecursiveTextSplitter implements TextSplitter {
         this.chapterSplitEnabled = chapterSplitEnabled;
     }
 
+    public int getChunkSize() {
+        return chunkSize;
+    }
+
+    public int getOverlap() {
+        return overlap;
+    }
+
+    public int getMinChunkLengthToKeep() {
+        return minChunkLengthToKeep;
+    }
+
+    public boolean isChapterSplitEnabled() {
+        return chapterSplitEnabled;
+    }
+
     @Override
     public List<TextChunk> split(String text) {
+        return split(text, null);
+    }
+
+    /**
+     * 使用局部参数切分，不改写实例字段（并发安全）。
+     *
+     * @param text    文本
+     * @param options 覆盖项；null 字段回落实例默认
+     * @return 块列表
+     */
+    public List<TextChunk> split(String text, SplitOptions options) {
         if (!StringUtils.hasText(text)) {
             return List.of();
         }
-        List<Section> sections = chapterSplitEnabled ? splitByChapter(text) : List.of(new Section("", text));
+        int size = resolveChunkSize(options);
+        int ov = resolveOverlap(options);
+        int minKeep = resolveMinKeep(options);
+        boolean chapter = resolveChapter(options);
+        List<Section> sections = chapter ? splitByChapter(text) : List.of(new Section("", text));
         List<TextChunk> out = new ArrayList<>();
         for (Section section : sections) {
-            out.addAll(splitRecursive(section.title(), section.body()));
+            out.addAll(splitRecursive(section.title(), section.body(), size, ov, minKeep));
         }
-        return mergeShort(out);
+        return mergeShort(out, minKeep);
+    }
+
+    /**
+     * 解析后的有效切分参数（写入 ingest_options）。
+     */
+    public SplitOptions resolve(SplitOptions options) {
+        return new SplitOptions(
+                resolveChunkSize(options),
+                resolveOverlap(options),
+                resolveMinKeep(options),
+                resolveChapter(options));
+    }
+
+    private int resolveChunkSize(SplitOptions options) {
+        if (options != null && options.chunkSize() != null) {
+            return Math.max(50, options.chunkSize());
+        }
+        return chunkSize;
+    }
+
+    private int resolveOverlap(SplitOptions options) {
+        if (options != null && options.overlap() != null) {
+            return Math.max(0, options.overlap());
+        }
+        return overlap;
+    }
+
+    private int resolveMinKeep(SplitOptions options) {
+        if (options != null && options.minChunkLengthToKeep() != null) {
+            return Math.max(1, options.minChunkLengthToKeep());
+        }
+        return minChunkLengthToKeep;
+    }
+
+    private boolean resolveChapter(SplitOptions options) {
+        if (options != null && options.chapterSplitEnabled() != null) {
+            return options.chapterSplitEnabled();
+        }
+        return chapterSplitEnabled;
     }
 
     private List<Section> splitByChapter(String text) {
@@ -76,23 +148,23 @@ public class ChineseRecursiveTextSplitter implements TextSplitter {
         return sections;
     }
 
-    private List<TextChunk> splitRecursive(String section, String body) {
+    private List<TextChunk> splitRecursive(String section, String body, int size, int ov, int minKeep) {
         if (!StringUtils.hasText(body)) {
             return List.of();
         }
-        if (body.length() <= chunkSize) {
+        if (body.length() <= size) {
             return List.of(new TextChunk(body, section));
         }
         List<String> parts = splitBySeparators(body, List.of("\n\n", "\n", "。", "！", "？", "；", "，"));
         List<TextChunk> chunks = new ArrayList<>();
         StringBuilder buf = new StringBuilder();
         for (String part : parts) {
-            if (buf.length() + part.length() > chunkSize && buf.length() >= minChunkLengthToKeep) {
+            if (buf.length() + part.length() > size && buf.length() >= minKeep) {
                 chunks.add(new TextChunk(buf.toString().trim(), section));
                 String prev = buf.toString();
                 buf.setLength(0);
-                if (overlap > 0 && prev.length() > overlap) {
-                    buf.append(prev.substring(prev.length() - overlap));
+                if (ov > 0 && prev.length() > ov) {
+                    buf.append(prev.substring(prev.length() - ov));
                 }
             }
             buf.append(part);
@@ -128,7 +200,7 @@ public class ChineseRecursiveTextSplitter implements TextSplitter {
         return current;
     }
 
-    private List<TextChunk> mergeShort(List<TextChunk> chunks) {
+    private List<TextChunk> mergeShort(List<TextChunk> chunks, int minKeep) {
         if (chunks.isEmpty()) {
             return chunks;
         }
@@ -139,7 +211,7 @@ public class ChineseRecursiveTextSplitter implements TextSplitter {
                 pending = c;
                 continue;
             }
-            if (pending.content().length() < minChunkLengthToKeep
+            if (pending.content().length() < minKeep
                     && pending.section().equals(c.section())) {
                 pending = new TextChunk(pending.content() + c.content(), pending.section());
             } else {

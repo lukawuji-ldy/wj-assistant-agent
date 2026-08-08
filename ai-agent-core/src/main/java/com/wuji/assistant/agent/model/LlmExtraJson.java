@@ -32,4 +32,20 @@ final class LlmExtraJson {
             return null;
         }
     }
+
+    static Integer integer(String extraJson, String key) {
+        if (!StringUtils.hasText(extraJson) || !StringUtils.hasText(key)) {
+            return null;
+        }
+        try {
+            JsonNode node = MAPPER.readTree(extraJson);
+            JsonNode v = node.get(key);
+            if (v == null || v.isNull() || !v.isNumber()) {
+                return null;
+            }
+            return v.asInt();
+        } catch (Exception e) {
+            return null;
+        }
+    }
 }
