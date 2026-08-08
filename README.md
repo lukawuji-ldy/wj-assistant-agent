@@ -49,4 +49,4 @@ assistant-agent-server → ai-agent-core → ai-memory / ai-rag / ai-common
 assistant-mcp-server → ai-common
 ```
 
-DDL 与迁移说明见 [`schema/`](schema/)；设计细节见 [`AGENTS.md`](AGENTS.md) 与 [`docs/`](docs/)。
+DDL 与迁移说明见 [`schema/`](schema/)。
