@@ -35,6 +35,10 @@ public enum ErrorCode {
     RAG_REFUSED("RAG_REFUSED", "无可靠知识命中"),
     /** 记忆加载失败 */
     MEMORY_LOAD_FAILED("MEMORY_LOAD_FAILED", "记忆加载失败"),
+    /** 记忆不存在 */
+    MEMORY_NOT_FOUND("MEMORY_NOT_FOUND", "记忆不存在"),
+    /** ACTIVE 记忆键冲突 */
+    MEMORY_KEY_CONFLICT("MEMORY_KEY_CONFLICT", "记忆键已存在"),
     /** 内部错误 */
     INTERNAL_ERROR("INTERNAL_ERROR", "系统内部错误");
 

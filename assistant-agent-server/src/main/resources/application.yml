@@ -27,7 +27,10 @@ spring:
       client:
         enabled: ${wuji.mcp.enabled:false}
         request-timeout: 20s
-        # SSE URL / Bearer 由 McpClientTransportConfiguration（wuji.mcp.*）装配，避免重复建连
+        # 禁止启动时同步 initialize：MCP Server 未起/不可达时不应拖垮 Agent 进程
+        # 工具发现由 McpToolRegistry 延迟执行，失败则空工具 + 定时重试
+        initialized: false
+        # SSE URL / Bearer 由 McpClientTransportConfiguration（wuji.mcp.* / DB）装配，避免重复建连
 
 management:
   endpoints:

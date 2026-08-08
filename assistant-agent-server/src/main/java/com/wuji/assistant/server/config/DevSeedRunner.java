@@ -7,7 +7,10 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 
+import com.wuji.assistant.agent.config.WujiMcpProperties;
+import com.wuji.assistant.agent.model.ApiKeyCipherService;
 import com.wuji.assistant.common.util.IdGenerator;
 import com.wuji.assistant.rag.ingest.ContentHashes;
 
@@ -26,10 +29,17 @@ public class DevSeedRunner implements ApplicationRunner {
 
     private final JdbcTemplate jdbcTemplate;
     private final PasswordEncoder passwordEncoder;
+    private final WujiMcpProperties mcpProperties;
+    private final ApiKeyCipherService apiKeyCipherService;
 
-    public DevSeedRunner(JdbcTemplate jdbcTemplate, PasswordEncoder passwordEncoder) {
+    public DevSeedRunner(JdbcTemplate jdbcTemplate,
+                         PasswordEncoder passwordEncoder,
+                         WujiMcpProperties mcpProperties,
+                         ApiKeyCipherService apiKeyCipherService) {
         this.jdbcTemplate = jdbcTemplate;
         this.passwordEncoder = passwordEncoder;
+        this.mcpProperties = mcpProperties;
+        this.apiKeyCipherService = apiKeyCipherService;
     }
 
     @Override
@@ -39,6 +49,60 @@ public class DevSeedRunner implements ApplicationRunner {
         seedLlm();
         seedPrompt();
         seedRagSample();
+        seedMcpServerRef();
+    }
+
+    /**
+     * MCP Server 连接行（P5.2）；不预置 binding（有 ACTIVE server 时零绑定=全量）。
+     * 已有行：补 base_url；若 yml 开了 Bearer 而库仍为 NONE，则同步鉴权（避免 /mcp/info 401 被当成不可达）。
+     */
+    private void seedMcpServerRef() {
+        Timestamp now = Timestamp.from(Instant.now());
+        String baseUrl = StringUtils.hasText(mcpProperties.getServerUrl())
+                ? mcpProperties.getServerUrl() : "http://127.0.0.1:8081";
+        String sse = StringUtils.hasText(mcpProperties.getSseEndpoint())
+                ? mcpProperties.getSseEndpoint() : "/sse";
+        boolean bearer = mcpProperties.getAuth() != null && mcpProperties.getAuth().isEnabled()
+                && StringUtils.hasText(mcpProperties.getAuth().getApiKey());
+        String authType = bearer ? "BEARER" : "NONE";
+        String cipher = bearer ? apiKeyCipherService.encrypt(mcpProperties.getAuth().getApiKey()) : null;
+
+        Integer cnt = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM mcp_server_ref WHERE server_code = ?", Integer.class, "wuji-mcp");
+        if (cnt != null && cnt > 0) {
+            jdbcTemplate.update("""
+                    UPDATE mcp_server_ref
+                    SET base_url = COALESCE(NULLIF(btrim(base_url), ''), ?),
+                        sse_endpoint = COALESCE(sse_endpoint, ?),
+                        update_time = ?
+                    WHERE server_code = 'wuji-mcp'
+                      AND (base_url IS NULL OR btrim(base_url) = '')
+                    """, baseUrl, sse, now);
+            if (bearer) {
+                int synced = jdbcTemplate.update("""
+                        UPDATE mcp_server_ref
+                        SET auth_type = 'BEARER',
+                            auth_token_cipher = ?,
+                            sse_endpoint = COALESCE(sse_endpoint, ?),
+                            update_time = ?
+                        WHERE server_code = 'wuji-mcp'
+                          AND (auth_type IS NULL OR upper(auth_type) = 'NONE'
+                               OR auth_token_cipher IS NULL OR btrim(auth_token_cipher) = '')
+                        """, cipher, sse, now);
+                if (synced > 0) {
+                    log.info("synced mcp_server_ref wuji-mcp auth from yml (BEARER)");
+                }
+            }
+            return;
+        }
+        jdbcTemplate.update("""
+                INSERT INTO mcp_server_ref
+                (id, server_code, display_name, base_url, sse_endpoint, auth_type, auth_token_cipher,
+                 status, sort_order, create_time, update_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 0, ?, ?)
+                """,
+                IdGenerator.nextLong(), "wuji-mcp", "无忌 MCP", baseUrl, sse, authType, cipher, now, now);
+        log.info("seeded mcp_server_ref wuji-mcp baseUrl={} authType={}", baseUrl, authType);
     }
 
     private void seedUser() {

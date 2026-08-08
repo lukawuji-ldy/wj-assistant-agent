@@ -67,14 +67,32 @@ public class McpInfoController {
                 .orElse("");
 
         String toolHash = sha256Hex(toolHashInput);
+        List<McpInfoResponse.ToolSummary> tools = toolDigests.stream()
+                .map(d -> new McpInfoResponse.ToolSummary(
+                        d.name(),
+                        d.description(),
+                        parseSchemaNode(d.inputSchema())))
+                .toList();
         return new McpInfoResponse(
                 serverName,
                 serverVersion,
                 protocol,
                 build.isBlank() ? null : build,
                 List.of("tools"),
-                toolHash
+                toolHash,
+                tools
         );
+    }
+
+    private JsonNode parseSchemaNode(String normalizedOrRaw) {
+        if (normalizedOrRaw == null || normalizedOrRaw.isBlank()) {
+            return objectMapper.createObjectNode();
+        }
+        try {
+            return objectMapper.readTree(normalizedOrRaw);
+        } catch (Exception ex) {
+            return objectMapper.getNodeFactory().textNode(normalizedOrRaw);
+        }
     }
 
     private void collectToolDefinitions(ToolCallbackProvider provider, List<ToolDefinitionDigest> out) {

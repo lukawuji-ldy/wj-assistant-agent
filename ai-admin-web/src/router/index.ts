@@ -36,14 +36,24 @@ const router = createRouter({
         {
           path: 'mcp',
           name: 'mcp',
-          component: () => import('@/views/PlaceholderView.vue'),
-          meta: { title: 'MCP 绑定', phase: 'P5' },
+          component: () => import('@/views/McpView.vue'),
+          meta: { title: 'MCP 绑定' },
         },
         {
           path: 'memory',
-          name: 'memory',
-          component: () => import('@/views/PlaceholderView.vue'),
-          meta: { title: '用户记忆', phase: 'P4' },
+          redirect: '/memory/profile',
+        },
+        {
+          path: 'memory/profile',
+          name: 'memory-profile',
+          component: () => import('@/views/MemoryProfileView.vue'),
+          meta: { title: 'Profile 记忆' },
+        },
+        {
+          path: 'memory/semantic',
+          name: 'memory-semantic',
+          component: () => import('@/views/MemorySemanticView.vue'),
+          meta: { title: 'Semantic 记忆' },
         },
         {
           path: 'llm-configs',
@@ -68,6 +78,12 @@ const router = createRouter({
           name: 'checkpoints',
           component: () => import('@/views/CheckpointsView.vue'),
           meta: { title: 'Checkpoint 回放' },
+        },
+        {
+          path: 'logs/audit',
+          name: 'audit-logs',
+          component: () => import('@/views/AuditLogsView.vue'),
+          meta: { title: '操作日志' },
         },
       ],
     },

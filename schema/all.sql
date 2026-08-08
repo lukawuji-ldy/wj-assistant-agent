@@ -28,5 +28,6 @@
 \ir 19_admin_audit_log.sql
 \ir 21_kb_chunk.sql
 \ir 22_kb_chunk_revision.sql
+\ir 26_mcp_tool_binding.sql
 -- 可选开发种子（leave policy chunk）；生产可跳过
 -- \ir 25_kb_chunk_seed_leave_policy.sql

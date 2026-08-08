@@ -47,6 +47,8 @@ class McpInfoControllerTest {
         assertTrue(Pattern.matches("[0-9a-f]{64}", r1.toolHash()));
         assertEquals(1, r1.capabilities().size());
         assertEquals("tools", r1.capabilities().get(0));
+        assertNotNull(r1.tools());
+        assertTrue(r1.tools().stream().anyMatch(t -> t.inputSchema() != null));
     }
 }
 

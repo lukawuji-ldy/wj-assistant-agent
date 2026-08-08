@@ -8,8 +8,13 @@
         <el-menu-item index="/prompts">提示词</el-menu-item>
         <el-menu-item index="/logs/llm-calls">调用日志</el-menu-item>
         <el-menu-item index="/logs/checkpoints">Checkpoint</el-menu-item>
+        <el-menu-item index="/logs/audit">操作日志</el-menu-item>
         <el-menu-item index="/kb">知识库</el-menu-item>
-        <el-menu-item index="/memory">用户记忆</el-menu-item>
+        <el-sub-menu index="/memory">
+          <template #title>用户记忆</template>
+          <el-menu-item index="/memory/profile">Profile</el-menu-item>
+          <el-menu-item index="/memory/semantic">Semantic</el-menu-item>
+        </el-sub-menu>
         <el-menu-item index="/mcp">MCP 绑定</el-menu-item>
       </el-menu>
     </el-aside>
@@ -40,8 +45,11 @@ const auth = useAuthStore()
 const active = computed(() => {
   const p = route.path
   if (p.startsWith('/kb')) return '/kb'
+  if (p.startsWith('/memory/profile')) return '/memory/profile'
+  if (p.startsWith('/memory/semantic')) return '/memory/semantic'
   if (p.startsWith('/logs/llm-calls')) return '/logs/llm-calls'
   if (p.startsWith('/logs/checkpoints')) return '/logs/checkpoints'
+  if (p.startsWith('/logs/audit')) return '/logs/audit'
   return p
 })
 const title = computed(() => (route.meta.title as string) || '运营后台')
