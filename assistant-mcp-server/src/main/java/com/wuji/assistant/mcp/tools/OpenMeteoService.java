@@ -4,10 +4,13 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.http.client.ReactorClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import reactor.netty.http.client.HttpClient;
 
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
@@ -27,6 +30,9 @@ public class OpenMeteoService {
     public OpenMeteoService() {
         this.restClient = RestClient.builder()
                 .baseUrl(BASE_URL)
+                .requestFactory(new ReactorClientHttpRequestFactory(
+                        HttpClient.create().responseTimeout(Duration.ofSeconds(10)) // 天气服务通常很快，10s足够
+                ))
                 .defaultHeader("Accept", "application/json")
                 .defaultHeader("User-Agent", "OpenMeteoClient/1.0")
                 .build();

@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
  * 知识库入库：预处理 → 切分 → kb_chunk / revision → 写入 kb_chunk.embedding。
@@ -27,6 +28,7 @@ import java.util.UUID;
 public class DocumentIngestService {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentIngestService.class);
+    public static final int PREVIEW_CHUNK_LIMIT = 200;
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
@@ -50,22 +52,18 @@ public class DocumentIngestService {
      * 入库并激活版本。
      */
     public IngestResult ingest(IngestRequest request) {
-        if (request == null || !StringUtils.hasText(request.content())) {
-            throw new WujiException(ErrorCode.BAD_REQUEST, "content 不能为空");
-        }
-        String title = StringUtils.hasText(request.title()) ? request.title().trim() : "未命名文档";
-        String collection = StringUtils.hasText(request.collection()) ? request.collection().trim() : "kb_default";
-        String docId = StringUtils.hasText(request.docId()) ? request.docId().trim() : IdGenerator.nextBizId("doc_");
-        SplitOptions resolved = splitter.resolve(request.splitOptions());
-        String cleaned = preprocessor.preprocess(request.content());
-        List<TextSplitter.TextChunk> chunks = splitter.split(cleaned, request.splitOptions());
-        if (chunks.isEmpty()) {
+        PreparedSplit prepared = prepareSplit(request.content(), request.splitOptions(), request.preprocessOptions());
+        if (prepared.chunks().isEmpty()) {
             throw new WujiException(ErrorCode.BAD_REQUEST, "切分后无有效内容");
         }
 
+        String title = StringUtils.hasText(request.title()) ? request.title().trim() : "未命名文档";
+        String collection = StringUtils.hasText(request.collection()) ? request.collection().trim() : "kb_default";
+        String docId = StringUtils.hasText(request.docId()) ? request.docId().trim() : IdGenerator.nextBizId("doc_");
+
         List<String> aclRoles = normalizeAcl(request.aclRoles());
         String aclJson = toJson(aclRoles);
-        String ingestOptionsJson = toJson(buildIngestOptions(resolved, request));
+        String ingestOptionsJson = toJson(buildIngestOptions(prepared, request));
 
         Timestamp now = Timestamp.from(Instant.now());
         ensureDocument(docId, collection, title, now);
@@ -87,7 +85,7 @@ public class DocumentIngestService {
                 """, versionId, title, now, docId);
 
         int i = 0;
-        for (TextSplitter.TextChunk chunk : chunks) {
+        for (TextSplitter.TextChunk chunk : prepared.chunks()) {
             i++;
             UUID chunkId = UUID.randomUUID();
             String chunkKey = docId + "_v" + version + "_c" + i;
@@ -110,12 +108,92 @@ public class DocumentIngestService {
                     """, chunkId, content, hash, now);
         }
 
-        int embeddedCount = embeddingService.embedVersion(versionId);
+        int embeddedCount = 0;
+        try {
+            embeddedCount = embeddingService.embedVersion(versionId);
+        } catch (Exception e) {
+            // 版本与 chunk 已落库；向量失败不回滚，避免前端长时间无响应/整单 500
+            log.warn("ingest embedding failed docId={} versionId={}: {}", docId, versionId, e.toString());
+        }
         boolean embedded = embeddedCount > 0;
 
         log.info("ingested docId={} version={} chunks={} embedded={} embeddedCount={}",
-                docId, version, chunks.size(), embedded, embeddedCount);
-        return new IngestResult(docId, versionId, version, chunks.size(), embedded);
+                docId, version, prepared.chunks().size(), embedded, embeddedCount);
+        return new IngestResult(docId, versionId, version, prepared.chunks().size(), embedded);
+    }
+
+    /**
+     * 预览切分：不落库、不 Embedding。
+     */
+    public SplitPreviewResult previewSplit(String content, SplitOptions splitOptions, PreprocessOptions preprocessOptions) {
+        PreparedSplit prepared = prepareSplit(content, splitOptions, preprocessOptions);
+        List<TextSplitter.TextChunk> all = prepared.chunks();
+        boolean truncated = all.size() > PREVIEW_CHUNK_LIMIT;
+        List<TextSplitter.TextChunk> limited = truncated
+                ? all.subList(0, PREVIEW_CHUNK_LIMIT) : all;
+        List<SplitPreviewResult.PreviewChunk> previewChunks = new ArrayList<>();
+        int seq = 0;
+        for (TextSplitter.TextChunk c : limited) {
+            seq++;
+            String body = c.content() == null ? "" : c.content();
+            previewChunks.add(new SplitPreviewResult.PreviewChunk(
+                    seq, c.section() == null ? "" : c.section(), body.length(), body));
+        }
+        return new SplitPreviewResult(
+                all.size(),
+                truncated,
+                prepared.cleaned().length(),
+                prepared.resolvedOptionsMap(),
+                previewChunks,
+                prepared.warnings());
+    }
+
+    /**
+     * 预处理 + 切分（入库与预览共用）。
+     */
+    public PreparedSplit prepareSplit(String content, SplitOptions splitOptions, PreprocessOptions preprocessOptions) {
+        if (!StringUtils.hasText(content)) {
+            throw new WujiException(ErrorCode.BAD_REQUEST, "content 不能为空");
+        }
+        // 统一走内容类型目录：无 strategy 时 normalize→narrative，旧四字段仅作覆盖项
+        String strategyRaw = splitOptions != null && StringUtils.hasText(splitOptions.preset())
+                ? splitOptions.preset().trim() : null;
+        SplitPresetCatalog.PresetBundle merged =
+                ContentTypeCatalog.merge(strategyRaw, splitOptions, preprocessOptions);
+
+        SplitOptions resolvedSplit = splitter.resolve(merged.split());
+        PreprocessOptions resolvedPre = preprocessor.resolve(merged.preprocess());
+        try {
+            ChineseRecursiveTextSplitter.validateOverlap(resolvedSplit);
+        } catch (IllegalArgumentException ex) {
+            throw new WujiException(ErrorCode.BAD_REQUEST, ex.getMessage());
+        }
+
+        String cleaned = preprocessor.preprocess(content, resolvedPre);
+        List<TextSplitter.TextChunk> chunks = splitter.split(cleaned, resolvedSplit);
+        List<String> warnings = new ArrayList<>();
+        String contentType = ContentTypeCatalog.normalize(
+                resolvedSplit.preset() != null ? resolvedSplit.preset() : strategyRaw);
+        if (Boolean.TRUE.equals(resolvedSplit.chapterSplitEnabled())
+                && StringUtils.hasText(resolvedSplit.chapterPattern())
+                && !Pattern.compile(resolvedSplit.chapterPattern()).matcher(cleaned).find()) {
+            if (ContentTypeCatalog.FAQ_QA.equals(contentType)) {
+                warnings.add("未识别到 FAQ 边界（Q:/问：），已退化为整段切分；请检查文档格式或改用其它类型");
+            } else if (ContentTypeCatalog.POLICY_CLAUSE.equals(contentType)) {
+                warnings.add("未识别到「第X章/第X条」条款标题，已退化为整段切分");
+            } else {
+                warnings.add("未检测到章节标题，已按纯叙述切分");
+            }
+        }
+        if (ContentTypeCatalog.CODE_STRUCTURE.equals(contentType)) {
+            warnings.add("代码类型为启发式占位切分，完整 AST 切分尚未落地");
+        }
+        if (resolvedSplit.overlap() != null && resolvedSplit.chunkSize() != null
+                && resolvedSplit.overlap() * 2 > resolvedSplit.chunkSize()) {
+            warnings.add("重叠量过高（超过 chunkSize 的 50%），可能导致数据冗余");
+        }
+        Map<String, Object> resolvedMap = buildResolvedOptionsMap(resolvedSplit, resolvedPre, contentType);
+        return new PreparedSplit(cleaned, chunks, resolvedSplit, resolvedPre, resolvedMap, warnings);
     }
 
     /**
@@ -142,12 +220,8 @@ public class DocumentIngestService {
                 """, docId, String.valueOf(versionId));
     }
 
-    private Map<String, Object> buildIngestOptions(SplitOptions resolved, IngestRequest request) {
-        Map<String, Object> opts = new LinkedHashMap<>();
-        opts.put("chunkSize", resolved.chunkSize());
-        opts.put("overlap", resolved.overlap());
-        opts.put("minChunkLengthToKeep", resolved.minChunkLengthToKeep());
-        opts.put("chapterSplitEnabled", resolved.chapterSplitEnabled());
+    private Map<String, Object> buildIngestOptions(PreparedSplit prepared, IngestRequest request) {
+        Map<String, Object> opts = new LinkedHashMap<>(prepared.resolvedOptionsMap());
         if (StringUtils.hasText(request.sourceFile())) {
             opts.put("sourceFile", request.sourceFile().trim());
         } else if (StringUtils.hasText(request.source())) {
@@ -158,6 +232,16 @@ public class DocumentIngestService {
         } else {
             opts.put("parser", "plaintext");
         }
+        return opts;
+    }
+
+    private static Map<String, Object> buildResolvedOptionsMap(SplitOptions split, PreprocessOptions pre,
+                                                               String contentType) {
+        Map<String, Object> opts = new LinkedHashMap<>();
+        opts.put("contentType", contentType);
+        opts.put("strategyId", contentType);
+        opts.putAll(SplitPresetCatalog.toSplitMap(split));
+        opts.put("preprocess", SplitPresetCatalog.toPreprocessMap(pre));
         return opts;
     }
 
@@ -253,5 +337,18 @@ public class DocumentIngestService {
         }
         sb.append(']');
         return sb.toString();
+    }
+
+    /**
+     * 预处理+切分中间结果。
+     */
+    public record PreparedSplit(
+            String cleaned,
+            List<TextSplitter.TextChunk> chunks,
+            SplitOptions resolvedSplit,
+            PreprocessOptions resolvedPreprocess,
+            Map<String, Object> resolvedOptionsMap,
+            List<String> warnings
+    ) {
     }
 }

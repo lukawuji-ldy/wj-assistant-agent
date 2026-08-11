@@ -214,6 +214,10 @@ public class ModelRouter {
         if (t == null) {
             return false;
         }
+        // 请求取消 / 线程中断：再试只会 BackOffInterruptedException
+        if (isInterrupted(t)) {
+            return false;
+        }
         if (t instanceof WujiException w) {
             return switch (w.getErrorCode()) {
                 case MODEL_RATE_LIMITED, MODEL_TIMEOUT, MODEL_UNAVAILABLE, INTERNAL_ERROR -> true;
@@ -261,7 +265,8 @@ public class ModelRouter {
                 && modelProperties.getRateLimitCodes().contains(status)) {
             return ErrorCode.MODEL_RATE_LIMITED;
         }
-        if (hasCause(t, TimeoutException.class)
+        if (isInterrupted(t)
+                || hasCause(t, TimeoutException.class)
                 || String.valueOf(t.getMessage()).toLowerCase().contains("timeout")) {
             return ErrorCode.MODEL_TIMEOUT;
         }
@@ -345,12 +350,18 @@ public class ModelRouter {
         }
     }
 
-    private static WujiException wrap(Throwable ex) {
+    private WujiException wrap(Throwable ex) {
         if (ex instanceof WujiException w) {
             return w;
         }
-        return new WujiException(ErrorCode.MODEL_UNAVAILABLE,
-                ex.getMessage() == null ? ErrorCode.MODEL_UNAVAILABLE.getMessage() : ex.getMessage(), ex);
+        ErrorCode code = mapErrorCode(ex);
+        String msg = ex.getMessage() == null ? code.getMessage() : ex.getMessage();
+        return new WujiException(code, msg, ex);
+    }
+
+    static boolean isInterrupted(Throwable t) {
+        return hasCause(t, InterruptedException.class)
+                || hasCause(t, java.io.InterruptedIOException.class);
     }
 
     private static Integer extractHttpStatus(Throwable t) {

@@ -8,10 +8,10 @@
 | 文件 | 内容 |
 |---|---|
 | `00_extensions.sql` | `CREATE EXTENSION vector` |
-| `01_sys_user.sql` … `20_prompt_template_version.sql` | 业务表 / 向量表 / Agent Checkpoint / Prompt 种子与版本表 / admin |
+| `01_sys_user.sql` … `20_prompt_template_version.sql`、`27_rag_prompts.sql` | 业务表 / 向量表 / Agent Checkpoint / Prompt 种子与版本表 / admin / 知识库提示词 |
 | `all.sql` | 用 `\ir` 按序串联以上脚本 |
 
-等价迁移：`V1__init.sql` … `V12__prompt_template_version.sql`（`prompt_template` 每 code 一行 + `prompt_template_version`）。
+等价迁移：`V1__init.sql` … `V21__rag_prompts.sql`（`prompt_template` 每 code 一行 + `prompt_template_version`；V21 种子知识库提示词）。
 
 ## 一键落库
 

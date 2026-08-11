@@ -88,6 +88,16 @@ public class KbDocumentQueryService {
         return new KbDocumentPage(items, totalCount, p, s);
     }
 
+    /**
+     * 已有 collection 去重列表（含空库时仍可由调用方补 default）。
+     */
+    public List<String> listCollections() {
+        List<String> rows = jdbcTemplate.queryForList(
+                "SELECT DISTINCT collection FROM kb_document WHERE collection IS NOT NULL AND collection <> '' ORDER BY collection",
+                String.class);
+        return rows == null ? List.of() : rows;
+    }
+
     public Map<String, Object> getDocument(String docId) {
         List<Map<String, Object>> docs = jdbcTemplate.queryForList("""
                 SELECT doc_id, collection, title, current_version_id, create_time, update_time

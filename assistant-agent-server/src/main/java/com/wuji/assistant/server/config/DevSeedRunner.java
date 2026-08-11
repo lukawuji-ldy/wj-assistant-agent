@@ -208,6 +208,10 @@ public class DevSeedRunner implements ApplicationRunner {
                 MEMORY_RETRIEVE_ROUTER_SYSTEM, now);
         upsertPrompt(13L, "memory.retrieve.router.user", "记忆检索路由用户提示词", "USER",
                 MEMORY_RETRIEVE_ROUTER_USER, now);
+        upsertPrompt(20L, "rag.knowledge_retrieval.system", "知识库检索工具说明", "SYSTEM",
+                RAG_KNOWLEDGE_RETRIEVAL_SYSTEM, now);
+        upsertPrompt(21L, "rag.answer.system", "知识库回答系统提示词", "SYSTEM",
+                RAG_ANSWER_SYSTEM, now);
     }
 
     /**
@@ -267,6 +271,16 @@ public class DevSeedRunner implements ApplicationRunner {
     private static final String AGENT_DEFAULT_SYSTEM = """
             你是企业智能助手，回答需准确、可引用知识库时必须标注来源；无可靠知识时不要编造制度结论。
             用户问「我喜欢什么 / 我的…」时，「我」指终端用户而非助手。若上下文含「已知用户长期记忆」，必须据此直接回答用户偏好或画像；禁止回答「助手没有个人偏好」，禁止把用户问题理解成询问助手自身。
+            """;
+
+    private static final String RAG_KNOWLEDGE_RETRIEVAL_SYSTEM = """
+            从已入库知识库检索片段。制度/FAQ/人物经历/产品说明等凡可能被文档回答的问题都必须调用；不要因为问题不像企业制度就跳过。rejected=true 时禁止编造事实。
+            """;
+
+    private static final String RAG_ANSWER_SYSTEM = """
+            凡用户问题可能被已入库文档回答（制度、FAQ、人物经历、产品说明等），必须先调用 knowledge_retrieval。
+            仅当工具返回 rejected=true 时，才能说「不在知识库范围内」；禁止仅凭「企业助手」身份、或仅根据其它文档主题（如 CRM）否定库中已有内容。
+            若上下文含「知识库已召回片段」，必须依据这些片段回答并标注来源，禁止再说不在知识库范围内。
             """;
 
     private static final String MEMORY_EXTRACT_SYSTEM = """

@@ -62,6 +62,41 @@ export interface KbDocumentDetail {
   versions: Record<string, unknown>[]
 }
 
+export interface ContentTypeDef {
+  id: string
+  contentType?: string
+  strategyId?: string
+  name: string
+  description: string
+  split: Record<string, unknown>
+  preprocess: Record<string, unknown>
+  deprecated?: boolean
+}
+
+export interface SplitPresetsMeta {
+  /** 文档内容类型（主） */
+  contentTypes: ContentTypeDef[]
+  /** 兼容旧字段，与 contentTypes 同义 */
+  presets: ContentTypeDef[]
+  aclRoleSuggestions: string[]
+}
+
+export interface SplitPreviewChunk {
+  seq: number
+  section: string
+  length: number
+  content: string
+}
+
+export interface SplitPreviewResult {
+  chunkCount: number
+  truncated: boolean
+  cleanedLength: number
+  resolvedOptions: Record<string, unknown>
+  chunks: SplitPreviewChunk[]
+  warnings: string[]
+}
+
 export async function listDocuments(params: {
   collection?: string
   status?: string
@@ -79,11 +114,33 @@ export async function getDocument(docId: string) {
   return data.data
 }
 
+export async function listCollections() {
+  const { data } = await http.get<ApiResponse<string[]>>('/api/admin/kb/collections')
+  return data.data
+}
+
+export async function listSplitPresets() {
+  const { data } = await http.get<ApiResponse<SplitPresetsMeta>>('/api/admin/kb/split-presets')
+  return data.data
+}
+
 export async function ingestFile(form: FormData) {
   const { data } = await http.post<ApiResponse<IngestResult>>('/api/admin/kb/documents', form, {
-    headers: { 'Content-Type': 'multipart/form-data' },
+    // 禁止手动写 multipart Content-Type：缺少 boundary 会导致表单字段（如 contentType）绑不上
     timeout: 120000,
   })
+  return data.data
+}
+
+export async function previewSplit(form: FormData) {
+  const { data } = await http.post<ApiResponse<SplitPreviewResult>>(
+    '/api/admin/kb/documents/preview-split',
+    form,
+    {
+      // 同上：交给浏览器/axios 自动带 boundary
+      timeout: 120000,
+    },
+  )
   return data.data
 }
 

@@ -1,10 +1,13 @@
 package com.wuji.assistant.agent.prompt;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 /**
  * PromptTemplateService 单元测试。
@@ -27,5 +30,13 @@ class PromptTemplateServiceTest {
     void renderMissingVarAsEmpty() {
         PromptTemplateService service = new PromptTemplateService(null);
         assertEquals("X-", service.render("X-{{missing}}", Map.of()));
+    }
+
+    @Test
+    void invalidatePublishesChangedEvent() {
+        ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
+        PromptTemplateService service = new PromptTemplateService(null, publisher);
+        service.invalidate("rag.answer.system");
+        verify(publisher).publishEvent(new PromptTemplateChangedEvent("rag.answer.system"));
     }
 }

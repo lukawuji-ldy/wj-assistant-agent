@@ -121,9 +121,11 @@ public class OpenAiEmbeddingClient implements EmbeddingClient {
                 throw new WujiException(ErrorCode.MODEL_UNAVAILABLE,
                         "EMBEDDING 配置缺少 model: " + configId);
             }
+
             OpenAiApi.Builder apiBuilder = OpenAiApi.builder()
                     .baseUrl(cfg.getBaseUrl())
-                    .apiKey(apiKey);
+                    .apiKey(apiKey)
+                    .restClientBuilder(LlmHttpClients.restClientBuilder(modelProperties.getTimeout()));
             String embeddingsPath = LlmExtraJson.text(cfg.getExtraJson(), "embeddings_path");
             if (StringUtils.hasText(embeddingsPath)) {
                 apiBuilder.embeddingsPath(embeddingsPath);

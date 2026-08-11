@@ -89,9 +89,12 @@ public class LlmClientFactory {
             throw new WujiException(ErrorCode.MODEL_UNAVAILABLE,
                     "LLM API Key 未配置，请更新 llm_config 或设置环境变量 WUJI_LLM_API_KEY");
         }
+
         OpenAiApi.Builder apiBuilder = OpenAiApi.builder()
                 .baseUrl(cfg.getBaseUrl())
-                .apiKey(apiKey);
+                .apiKey(apiKey)
+                .restClientBuilder(LlmHttpClients.restClientBuilder(modelProperties.getTimeout()))
+                .webClientBuilder(LlmHttpClients.webClientBuilder(modelProperties.getTimeout()));
         String completionsPath = LlmExtraJson.text(cfg.getExtraJson(), "chat_completions_path");
         if (StringUtils.hasText(completionsPath)) {
             apiBuilder.completionsPath(completionsPath);
@@ -108,6 +111,7 @@ public class LlmClientFactory {
         OpenAiChatModel chatModel = OpenAiChatModel.builder()
                 .openAiApi(openAiApi)
                 .defaultOptions(optionsBuilder.build())
+                .retryTemplate(LlmHttpClients.noInnerRetry())
                 .build();
         ChatClient chatClient = ChatClient.builder(chatModel).build();
         log.info("LLM client initialized, configId={}, model={}, kind={}", configId, cfg.getModel(), cfg.getModelKind());

@@ -1,5 +1,7 @@
 package com.wuji.assistant.agent.prompt;
 
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -21,10 +23,17 @@ public class PromptTemplateService {
     private static final Pattern VAR = Pattern.compile("\\{\\{\\s*([a-zA-Z0-9_.-]+)\\s*}}");
 
     private final JdbcTemplate jdbcTemplate;
+    private final ApplicationEventPublisher eventPublisher;
     private final ConcurrentHashMap<String, String> contentCache = new ConcurrentHashMap<>();
 
     public PromptTemplateService(JdbcTemplate jdbcTemplate) {
+        this(jdbcTemplate, null);
+    }
+
+    @Autowired
+    public PromptTemplateService(JdbcTemplate jdbcTemplate, ApplicationEventPublisher eventPublisher) {
         this.jdbcTemplate = jdbcTemplate;
+        this.eventPublisher = eventPublisher;
     }
 
     /**
@@ -48,6 +57,7 @@ public class PromptTemplateService {
     public void invalidate(String code) {
         if (StringUtils.hasText(code)) {
             contentCache.remove(code);
+            publishChanged(code);
         }
     }
 
@@ -56,6 +66,13 @@ public class PromptTemplateService {
      */
     public void invalidateAll() {
         contentCache.clear();
+        publishChanged("*");
+    }
+
+    private void publishChanged(String code) {
+        if (eventPublisher != null) {
+            eventPublisher.publishEvent(new PromptTemplateChangedEvent(code));
+        }
     }
 
     /**

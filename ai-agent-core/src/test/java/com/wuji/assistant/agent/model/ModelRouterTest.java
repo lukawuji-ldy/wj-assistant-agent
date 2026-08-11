@@ -12,8 +12,10 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -153,6 +155,35 @@ class ModelRouterTest {
     }
 
     @Test
+    void interrupted_isNotRetryable_mapsToTimeout() {
+        ResourceAccessException ex = new ResourceAccessException(
+                "I/O error on POST request for \"https://api.edgefn.net/v1/chat/completions\": java.lang.InterruptedException",
+                new IOException(new InterruptedException()));
+        assertFalse(modelRouter.isRetryable(ex));
+        assertEquals(ErrorCode.MODEL_TIMEOUT, modelRouter.mapErrorCode(ex));
+    }
+
+    @Test
+    void interrupted_doesNotFailover() {
+        LlmConfigRecord primary = config("llm_primary", "p1");
+        when(llmClientFactory.getChatClient("llm_primary")).thenReturn(mock(ChatClient.class));
+        when(llmClientFactory.getConfig("llm_primary")).thenReturn(primary);
+
+        ResourceAccessException ex = new ResourceAccessException(
+                "interrupted", new IOException(new InterruptedException()));
+        ModelRouter.AuditContext audit = new ModelRouter.AuditContext(
+                "t1", "c1", "m1", "u1", "sys", "user");
+
+        WujiException thrown = assertThrows(WujiException.class, () ->
+                modelRouter.execute(audit, routed -> {
+                    throw ex;
+                }));
+
+        assertEquals(ErrorCode.MODEL_TIMEOUT, thrown.getErrorCode());
+        verify(llmClientFactory, never()).getChatClient("llm_backup_1");
+    }
+
+    @Test
     void mapErrorCode_arraycopyAndUtf8AreInternalNotModelUnavailable() {
         assertEquals(ErrorCode.INTERNAL_ERROR,
                 modelRouter.mapErrorCode(new ArrayIndexOutOfBoundsException(
@@ -194,6 +225,30 @@ class ModelRouterTest {
 
         assertEquals(2, primaryHits.get());
         assertEquals("llm_backup_1", result.configId());
+    }
+
+    @Test
+    void swallowedAgentLlmNode429_thenFallbackSucceeds() {
+        LlmConfigRecord primary = config("llm_primary", "p1");
+        LlmConfigRecord backup = config("llm_backup_1", "p2");
+        when(llmClientFactory.getChatClient("llm_primary")).thenReturn(mock(ChatClient.class));
+        when(llmClientFactory.getConfig("llm_primary")).thenReturn(primary);
+        when(llmClientFactory.getChatClient("llm_backup_1")).thenReturn(mock(ChatClient.class));
+        when(llmClientFactory.getConfig("llm_backup_1")).thenReturn(backup);
+
+        ModelRouter.AuditContext audit = new ModelRouter.AuditContext(
+                "t1", "c1", "m1", "u1", "sys", "user");
+        ModelRouter.RoutedResult<String> result = modelRouter.execute(audit, routed -> {
+            if ("llm_primary".equals(routed.configId())) {
+                throw SwallowedLlmErrors.toException(
+                        "Exception: 429 - {\"code\":429,\"reason\":\"RateLimitExceeded\"}");
+            }
+            return "from-backup";
+        });
+
+        assertEquals("from-backup", result.value());
+        assertEquals("llm_backup_1", result.configId());
+        assertTrue(result.client().fallback());
     }
 
     private static LlmConfigRecord config(String configId, String provider) {

@@ -12,6 +12,7 @@ import com.wuji.assistant.rag.ingest.KbChunkWriteResult;
 import com.wuji.assistant.rag.ingest.KbDocumentQueryService;
 import com.wuji.assistant.rag.ingest.KbChunkEmbeddingService;
 import com.wuji.assistant.rag.ingest.PdfTextExtractor;
+import com.wuji.assistant.rag.ingest.SplitPreviewResult;
 import com.wuji.assistant.server.admin.audit.AdminAuditLogRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -59,7 +60,7 @@ class AdminKbServiceTest {
     @BeforeEach
     void setUp() {
         service = new AdminKbService(ingestService, queryService, chunkService, embeddingService,
-                pdfTextExtractor, auditLogRepository);
+                pdfTextExtractor, auditLogRepository, "admin,viewer");
     }
 
     @Test
@@ -85,6 +86,17 @@ class AdminKbServiceTest {
         assertEquals(120, cap.getValue().splitOptions().chunkSize());
         assertEquals(List.of("role_a"), cap.getValue().aclRoles());
         verify(auditLogRepository).insert(eq("a_admin"), eq("INGEST"), eq("KB_DOCUMENT"), eq("doc_1"), any());
+    }
+
+    @Test
+    void previewSplitDelegates() {
+        when(ingestService.previewSplit(any(), any(), any()))
+                .thenReturn(new SplitPreviewResult(1, false, 10, Map.of(), List.of(), List.of()));
+        SplitPreviewResult r = service.previewSplitText(new AdminKbIngestTextRequest(
+                null, null, null, "一、章\n正文", null, null, "zh_chapter",
+                null, null, null, null, null, null, null, null,
+                null, null, null, null, null, null));
+        assertEquals(1, r.chunkCount());
     }
 
     @Test

@@ -52,6 +52,7 @@ public class GlobalExceptionHandler {
             case UNAUTHORIZED -> HttpStatus.UNAUTHORIZED;
             case FORBIDDEN -> HttpStatus.FORBIDDEN;
             case NOT_FOUND -> HttpStatus.NOT_FOUND;
+            case MODEL_TIMEOUT -> HttpStatus.GATEWAY_TIMEOUT;
             default -> HttpStatus.INTERNAL_SERVER_ERROR;
         };
     }

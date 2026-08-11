@@ -24,6 +24,7 @@
 \ir 15_memory_extract_prompt.sql
 \ir 16_memory_retrieve_prompt.sql
 \ir 17_memory_retrieve_router_prompt.sql
+\ir 27_rag_prompts.sql
 \ir 18_admin_user.sql
 \ir 19_admin_audit_log.sql
 \ir 21_kb_chunk.sql

@@ -25,6 +25,9 @@ public class WujiModelProperties {
 
     private Retry retry = new Retry();
 
+    /** LLM 调用响应超时 */
+    private Duration timeout = Duration.ofSeconds(60);
+
     /** 判定限流的 HTTP 状态码 */
     private List<Integer> rateLimitCodes = new ArrayList<>(List.of(429));
 
@@ -58,6 +61,14 @@ public class WujiModelProperties {
 
     public void setRetry(Retry retry) {
         this.retry = retry;
+    }
+
+    public Duration getTimeout() {
+        return timeout;
+    }
+
+    public void setTimeout(Duration timeout) {
+        this.timeout = timeout;
     }
 
     public List<Integer> getRateLimitCodes() {

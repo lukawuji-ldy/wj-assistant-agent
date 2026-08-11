@@ -1,9 +1,16 @@
 server:
   port: 8080
+  netty:
+    # 非流式 /api/chat 在 LLM 完成前不写 body，避免空闲断开
+    idle-timeout: 10m
 
 spring:
   application:
     name: assistant-agent-server
+  # Boot 3.4 默认 RestClient 走 Reactor Netty；与 WebFlux + ReactAgent.block 叠用会 InterruptedException
+  http:
+    client:
+      factory: jdk
   datasource:
     url: jdbc:postgresql://127.0.0.1:5432/vector_test
     username: postgres
@@ -59,6 +66,8 @@ wuji:
         secret: ${WUJI_ADMIN_JWT_SECRET:change-me-wuji-admin-jwt-secret-key-32bytes}
         expire-hours: 24
         issuer: wuji-assistant-admin
+    kb:
+      acl-role-suggestions: admin,viewer
   model:
     primary-config-id: llm_primary
     fallback-config-ids:
@@ -66,6 +75,7 @@ wuji:
     retry:
       max-attempts: 3
       backoff: 1s
+    timeout: 60s
     rate-limit-codes: [429]
     api-key-override: ${WUJI_LLM_API_KEY:}
   agent:
@@ -97,10 +107,24 @@ wuji:
     answer-mode: grounded
     embedding-enabled: true
     embedding-config-id: llm_embedding
+    tool-description-prompt-code: rag.knowledge_retrieval.system
+    answer-prompt-code: rag.answer.system
+    prefetch-enabled: false
     chunk-size: 500
     chunk-overlap: 80
     min-chunk-length-to-keep: 50
     chapter-split-enabled: true
+    splitter:
+      section-title-mode: FULL_LINE
+      keep-separator: APPEND
+    preprocess:
+      normalize-newlines: true
+      strip-page-numbers: true
+      merge-cjk-hard-wrap: true
+      collapse-blank-lines: true
+      trim-outside-chapters: false
+      trailing-noise-markers:
+        - 复制上面这段
   mcp:
     enabled: true
     server-url: http://127.0.0.1:8081
@@ -135,7 +159,7 @@ wuji:
       mode: hybrid
       system-prompt-code: memory.extract.system
       user-prompt-code: memory.extract.user
-      timeout: 20s
+      timeout: 60s
       min-confidence: 0.55
     lifecycle:
       consolidate-enabled: true

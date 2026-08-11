@@ -11,12 +11,14 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
 /**
- * 知识库检索：优先余弦（kb_chunk.embedding）；无 Embedding 时降级 ILIKE。
+ * 知识库检索：优先余弦（kb_chunk.embedding）；无 Embedding / 余弦空或低于阈值时 ILIKE（整句 + 切词）。
  *
  * @author liudy
  */
@@ -52,20 +54,42 @@ public class KnowledgeRetrievalService {
             return new RetrievalResult(List.of(), true, "查询为空");
         }
         int limit = Math.max(1, topK);
-        List<RetrievalResult.Hit> hits;
+        String q = query.trim();
+        List<RetrievalResult.Hit> cosineHits = List.of();
         if (embeddingClient.available()) {
-            hits = cosineSearch(query.trim(), limit);
+            cosineHits = cosineSearch(q, limit);
         } else {
-            log.debug("embedding unavailable, fallback to ILIKE retrieval");
-            hits = keywordSearch(query.trim(), limit);
+            log.debug("embedding unavailable, keyword-only retrieval");
         }
-        List<RetrievalResult.Hit> reliable = hits.stream()
+        // 无向量的文档（如未点「重建向量」）不会出现在余弦结果里；其它文档的弱相似会抢走 topK。
+        // 关键词命中与余弦合并，避免「库里有 ACTIVE 文档却答成 CRM 拒答」。
+        List<RetrievalResult.Hit> keywordHits = keywordSearch(q, limit);
+        List<RetrievalResult.Hit> reliable = mergeHits(cosineHits, keywordHits, limit).stream()
                 .filter(h -> h.score() >= minReliableScore)
                 .toList();
         if (reliable.isEmpty()) {
             return new RetrievalResult(List.of(), true, "无可靠知识命中");
         }
         return new RetrievalResult(reliable, false, null);
+    }
+
+    static List<RetrievalResult.Hit> mergeHits(List<RetrievalResult.Hit> cosineHits,
+                                               List<RetrievalResult.Hit> keywordHits,
+                                               int limit) {
+        Map<String, RetrievalResult.Hit> byId = new LinkedHashMap<>();
+        for (RetrievalResult.Hit hit : cosineHits) {
+            byId.put(hit.chunkId(), hit);
+        }
+        for (RetrievalResult.Hit hit : keywordHits) {
+            RetrievalResult.Hit old = byId.get(hit.chunkId());
+            if (old == null || hit.score() > old.score()) {
+                byId.put(hit.chunkId(), hit);
+            }
+        }
+        return byId.values().stream()
+                .sorted(Comparator.comparingDouble(RetrievalResult.Hit::score).reversed())
+                .limit(Math.max(1, limit))
+                .toList();
     }
 
     private List<RetrievalResult.Hit> cosineSearch(String query, int limit) {
@@ -113,26 +137,36 @@ public class KnowledgeRetrievalService {
     }
 
     private List<RetrievalResult.Hit> keywordSearch(String query, int limit) {
-        String like = "%" + query + "%";
+        List<String> patterns = likePatterns(query);
+        if (patterns.isEmpty()) {
+            return List.of();
+        }
+        StringBuilder sql = new StringBuilder("""
+                SELECT c.chunk_id::text AS chunk_id,
+                       r.content AS content,
+                       c.current_revision AS revision,
+                       r.content_hash AS content_hash,
+                       c.doc_id, c.collection, c.section, c.summary, c.chunk_key,
+                       c.version_id, v.version, v.embedding_config_id,
+                       v.embedding_model_version
+                FROM kb_chunk c
+                JOIN kb_document_version v ON v.id = c.version_id AND v.status = 'ACTIVE'
+                JOIN kb_chunk_revision r
+                  ON r.chunk_id = c.chunk_id AND r.revision = c.current_revision AND r.status = 'ACTIVE'
+                WHERE c.status = 'ACTIVE' AND (
+                """);
+        for (int i = 0; i < patterns.size(); i++) {
+            if (i > 0) {
+                sql.append(" OR ");
+            }
+            sql.append("r.content ILIKE ?");
+        }
+        sql.append(") ORDER BY length(r.content) ASC LIMIT ?");
+        List<Object> args = new ArrayList<>(patterns);
+        args.add(limit);
         List<RetrievalResult.Hit> hits = new ArrayList<>();
         try {
-            jdbcTemplate.query("""
-                            SELECT c.chunk_id::text AS chunk_id,
-                                   r.content AS content,
-                                   c.current_revision AS revision,
-                                   r.content_hash AS content_hash,
-                                   c.doc_id, c.collection, c.section, c.summary, c.chunk_key,
-                                   c.version_id, v.version, v.embedding_config_id,
-                                   v.embedding_model_version
-                            FROM kb_chunk c
-                            JOIN kb_document_version v ON v.id = c.version_id AND v.status = 'ACTIVE'
-                            JOIN kb_chunk_revision r
-                              ON r.chunk_id = c.chunk_id AND r.revision = c.current_revision AND r.status = 'ACTIVE'
-                            WHERE c.status = 'ACTIVE'
-                              AND r.content ILIKE ?
-                            ORDER BY length(r.content) ASC
-                            LIMIT ?
-                            """,
+            jdbcTemplate.query(sql.toString(),
                     rs -> {
                         while (rs.next()) {
                             hits.add(toHit(
@@ -143,12 +177,27 @@ public class KnowledgeRetrievalService {
                         }
                         return null;
                     },
-                    like, limit);
+                    args.toArray());
         } catch (Exception e) {
             log.warn("knowledge retrieve failed: {}", e.toString());
             return List.of();
         }
         return hits;
+    }
+
+    static List<String> likePatterns(String query) {
+        LinkedHashSet<String> patterns = new LinkedHashSet<>();
+        String full = RetrievalQueryTerms.likeLiteral(query);
+        if (full.length() >= 2) {
+            patterns.add("%" + full + "%");
+        }
+        for (String term : RetrievalQueryTerms.terms(query)) {
+            String lit = RetrievalQueryTerms.likeLiteral(term);
+            if (lit.length() >= 2) {
+                patterns.add("%" + lit + "%");
+            }
+        }
+        return new ArrayList<>(patterns);
     }
 
     private RetrievalResult.Hit toHit(String chunkId, String content, double score,

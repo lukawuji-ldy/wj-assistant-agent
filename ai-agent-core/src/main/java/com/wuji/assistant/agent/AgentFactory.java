@@ -9,6 +9,8 @@ import com.alibaba.cloud.ai.graph.checkpoint.BaseCheckpointSaver;
 import com.wuji.assistant.agent.checkpoint.CheckpointSaverFactory;
 import com.wuji.assistant.agent.config.WujiAgentProperties;
 import com.wuji.assistant.agent.model.LlmClientFactory;
+import com.wuji.assistant.agent.model.SwallowedLlmErrorInterceptor;
+import com.wuji.assistant.agent.prompt.PromptTemplateChangedEvent;
 import com.wuji.assistant.agent.prompt.WujiSystemPromptInterceptor;
 import com.wuji.assistant.agent.tool.BuiltinToolProvider;
 import com.wuji.assistant.agent.tool.McpToolHashChangedEvent;
@@ -89,6 +91,12 @@ public class AgentFactory {
         log.info("ReactAgent cache cleared due to MCP toolHash change: {}", event.toolHash());
     }
 
+    @EventListener
+    public void onPromptTemplateChanged(PromptTemplateChangedEvent event) {
+        cache.clear();
+        log.info("ReactAgent cache cleared due to prompt change: {}", event.code());
+    }
+
     /**
      * 将框架超限异常映射为业务错误码。
      *
@@ -136,7 +144,7 @@ public class AgentFactory {
                 .model(chatModel)
                 .saver(saver)
                 .hooks(modelLimit, toolLimit)
-                .interceptors(new WujiSystemPromptInterceptor());
+                .interceptors(new WujiSystemPromptInterceptor(), new SwallowedLlmErrorInterceptor());
         if (!tools.isEmpty()) {
             builder.tools(tools);
         }

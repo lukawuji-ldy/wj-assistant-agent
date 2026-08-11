@@ -7,15 +7,18 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wuji.assistant.agent.config.WujiAgentProperties;
 import com.wuji.assistant.agent.config.WujiMemoryProperties;
 import com.wuji.assistant.agent.config.WujiModelProperties;
+import com.wuji.assistant.agent.config.WujiRagProperties;
 import com.wuji.assistant.agent.dto.ChatResult;
 import com.wuji.assistant.agent.dto.ChatStreamRequest;
 import com.wuji.assistant.agent.memory.LlmMemoryExtractOrchestrator;
 import com.wuji.assistant.agent.model.LlmCallAuditor;
 import com.wuji.assistant.agent.model.ModelRouter;
+import com.wuji.assistant.agent.model.SwallowedLlmErrors;
 import com.wuji.assistant.agent.observability.AgentTelemetry;
 import com.wuji.assistant.agent.observability.ChatMdc;
 import com.wuji.assistant.agent.prompt.PromptTemplateService;
 import com.wuji.assistant.agent.prompt.WujiSystemPromptInterceptor;
+import com.wuji.assistant.agent.rag.RagContextBlock;
 import com.wuji.assistant.agent.stream.AgentStreamBridge;
 import com.wuji.assistant.agent.stream.StreamSession;
 import com.wuji.assistant.agent.stream.StreamSessionRegistry;
@@ -33,6 +36,7 @@ import com.wuji.assistant.memory.repo.ChatMessageRepository;
 import com.wuji.assistant.memory.repo.ConversationRepository;
 import com.wuji.assistant.memory.retrieve.LongTermMemoryRetriever;
 import com.wuji.assistant.memory.retrieve.MemoryRetrieveOptions;
+import com.wuji.assistant.rag.KnowledgeRetrievalService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -73,6 +77,8 @@ public class ChatFacade {
     private final WujiModelProperties modelProperties;
     private final WujiAgentProperties agentProperties;
     private final WujiMemoryProperties memoryProperties;
+    private final WujiRagProperties ragProperties;
+    private final KnowledgeRetrievalService knowledgeRetrievalService;
     private final MemoryExtractService memoryExtractService;
     private final LlmMemoryExtractOrchestrator memoryExtractOrchestrator;
     private final LongTermMemoryRetriever longTermMemoryRetriever;
@@ -91,6 +97,8 @@ public class ChatFacade {
                       WujiModelProperties modelProperties,
                       WujiAgentProperties agentProperties,
                       WujiMemoryProperties memoryProperties,
+                      WujiRagProperties ragProperties,
+                      KnowledgeRetrievalService knowledgeRetrievalService,
                       MemoryExtractService memoryExtractService,
                       LlmMemoryExtractOrchestrator memoryExtractOrchestrator,
                       LongTermMemoryRetriever longTermMemoryRetriever,
@@ -108,6 +116,8 @@ public class ChatFacade {
         this.modelProperties = modelProperties;
         this.agentProperties = agentProperties;
         this.memoryProperties = memoryProperties;
+        this.ragProperties = ragProperties;
+        this.knowledgeRetrievalService = knowledgeRetrievalService;
         this.memoryExtractService = memoryExtractService;
         this.memoryExtractOrchestrator = memoryExtractOrchestrator;
         this.longTermMemoryRetriever = longTermMemoryRetriever;
@@ -154,8 +164,8 @@ public class ChatFacade {
         if (request == null || !StringUtils.hasText(request.message())) {
             return Mono.error(new WujiException(ErrorCode.BAD_REQUEST, "message 不能为空"));
         }
-        return Mono.fromCallable(() -> doChat(userId, request))
-                .subscribeOn(Schedulers.boundedElastic());
+        // 禁止 subscribeOn(boundedElastic)：cancel 会 interrupt，JDK HttpClient 报 Request was interrupted
+        return DetachedBlockingMono.fromCallable(() -> doChat(userId, request));
     }
 
     private Flux<ServerSentEvent<String>> resumeStream(String userId, ChatStreamRequest request) {
@@ -197,7 +207,12 @@ public class ChatFacade {
                 try {
                     ReactAgent agent = agentFactory.getOrCreate(client.configId());
                     AssistantMessage reply = agent.call(ctx.messages(), runnableConfig);
-                    return reply == null || reply.getText() == null ? "" : reply.getText();
+                    String text = reply == null || reply.getText() == null ? "" : reply.getText();
+                    RuntimeException swallowed = SwallowedLlmErrors.toException(text);
+                    if (swallowed != null) {
+                        throw swallowed;
+                    }
+                    return text;
                 } catch (Exception ex) {
                     throw AgentFactory.mapLimitException(ex);
                 }
@@ -216,6 +231,8 @@ public class ChatFacade {
                     routed.configId()
             );
         } catch (Exception ex) {
+            // RestClient/Reactor 在取消时会置 interrupt；先清掉以便落库并返回 JSON，避免前端收到纯文本 Internal Server Error
+            Thread.interrupted();
             chatMessageRepository.updateContentAndStatus(
                     ctx.assistantMsg().getMessageId(), "", "CANCELLED");
             Throwable mapped = mapAgentError(ex);
@@ -271,6 +288,14 @@ public class ChatFacade {
                 agentProperties.getSystemPromptCode(),
                 Map.of(),
                 "你是企业智能助手，回答需准确。");
+        String ragAnswerPrompt = promptTemplateService.loadAndRender(
+                ragProperties.getAnswerPromptCode(),
+                Map.of(),
+                "");
+        if (StringUtils.hasText(ragAnswerPrompt)) {
+            systemPrompt = systemPrompt + "\n\n" + ragAnswerPrompt.trim();
+        }
+        systemPrompt = appendRagPrefetch(systemPrompt, request.message());
         String userPrompt = promptTemplateService.loadAndRender(
                 agentProperties.getUserPromptCode(),
                 Map.of("message", request.message()),
@@ -563,6 +588,28 @@ public class ChatFacade {
         Runnable task = () -> summaryService.compressIfNeeded(
                 ctx.userId(), ctx.conversation().getConversationId(), threshold, keep);
         Schedulers.boundedElastic().schedule(task);
+    }
+
+    private String appendRagPrefetch(String systemPrompt, String userMessage) {
+        if (!ragProperties.isPrefetchEnabled() || knowledgeRetrievalService == null) {
+            return systemPrompt;
+        }
+        try {
+            var result = knowledgeRetrievalService.retrieve(
+                    userMessage,
+                    ragProperties.getTopK(),
+                    ragProperties.getMinReliableScore());
+            String block = RagContextBlock.format(result);
+            if (!StringUtils.hasText(block)) {
+                return systemPrompt;
+            }
+            int hitCount = result.hits() == null ? 0 : result.hits().size();
+            log.info("rag prefetch rejected={} hits={}", result.rejected(), hitCount);
+            return systemPrompt + "\n\n" + block;
+        } catch (Exception e) {
+            log.warn("rag prefetch failed: {}", e.toString());
+            return systemPrompt;
+        }
     }
 
     private static RunnableConfig runnableConfig(StreamContext ctx) {

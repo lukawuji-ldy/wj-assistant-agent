@@ -6,10 +6,13 @@ import com.wuji.assistant.rag.ingest.KbChunkRevisionView;
 import com.wuji.assistant.rag.ingest.KbChunkView;
 import com.wuji.assistant.rag.ingest.KbChunkWriteResult;
 import com.wuji.assistant.rag.ingest.KbVersionEmbeddingView;
+import com.wuji.assistant.rag.ingest.SplitPreviewResult;
 import com.wuji.assistant.server.admin.security.CurrentAdmin;
 import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.multipart.FilePart;
+import org.springframework.http.codec.multipart.Part;
+import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -18,7 +21,6 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -60,6 +62,20 @@ public class AdminKbController {
                         .subscribeOn(Schedulers.boundedElastic()));
     }
 
+    @GetMapping("/collections")
+    public Mono<ApiResponse<List<String>>> collections() {
+        return CurrentAdmin.require().flatMap(admin ->
+                Mono.fromCallable(() -> ApiResponse.ok(adminKbService.listCollections()))
+                        .subscribeOn(Schedulers.boundedElastic()));
+    }
+
+    @GetMapping("/split-presets")
+    public Mono<ApiResponse<Map<String, Object>>> splitPresets() {
+        return CurrentAdmin.require().flatMap(admin ->
+                Mono.fromCallable(() -> ApiResponse.ok(adminKbService.splitPresetsMeta()))
+                        .subscribeOn(Schedulers.boundedElastic()));
+    }
+
     @PostMapping(value = "/documents", consumes = MediaType.APPLICATION_JSON_VALUE)
     public Mono<ApiResponse<IngestResult>> ingestJson(@RequestBody AdminKbIngestTextRequest request) {
         return CurrentAdmin.require().flatMap(admin ->
@@ -69,30 +85,52 @@ public class AdminKbController {
 
     @PostMapping(value = "/documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Mono<ApiResponse<IngestResult>> ingestFile(
-            @RequestPart("file") FilePart file,
-            @RequestParam(value = "title", required = false) String title,
-            @RequestParam(value = "collection", required = false) String collection,
-            @RequestParam(value = "docId", required = false) String docId,
-            @RequestParam(value = "aclRoles", required = false) String aclRoles,
-            @RequestParam(value = "chunkSize", required = false) Integer chunkSize,
-            @RequestParam(value = "overlap", required = false) Integer overlap,
-            @RequestParam(value = "minChunkLengthToKeep", required = false) Integer minChunkLengthToKeep,
-            @RequestParam(value = "chapterSplitEnabled", required = false) Boolean chapterSplitEnabled) {
-        String filename = file.filename() == null ? "upload.txt" : file.filename();
+            @RequestBody Mono<MultiValueMap<String, Part>> multipart) {
+        // 先订阅 multipart，避免延后读 body 导致 Part 流被收掉、请求挂起无响应
+        return multipart.flatMap(parts -> CurrentAdmin.require().flatMap(admin -> {
+            FilePart file = AdminKbMultipartForms.requireFile(parts);
+            String filename = file.filename() == null ? "upload.txt" : file.filename();
+            AdminKbIngestForm form = AdminKbMultipartForms.toIngestForm(parts);
+            return DataBufferUtils.join(file.content()).flatMap(dataBuffer -> {
+                try {
+                    byte[] bytes = new byte[dataBuffer.readableByteCount()];
+                    dataBuffer.read(bytes);
+                    return Mono.fromCallable(() -> ApiResponse.ok(
+                                    adminKbService.ingestFile(admin, filename, bytes, form)))
+                            .subscribeOn(Schedulers.boundedElastic());
+                } finally {
+                    DataBufferUtils.release(dataBuffer);
+                }
+            });
+        }));
+    }
+
+    @PostMapping(value = "/documents/preview-split", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public Mono<ApiResponse<SplitPreviewResult>> previewSplitFile(
+            @RequestBody Mono<MultiValueMap<String, Part>> multipart) {
+        return multipart.flatMap(parts -> CurrentAdmin.require().flatMap(admin -> {
+            FilePart file = AdminKbMultipartForms.requireFile(parts);
+            String filename = file.filename() == null ? "upload.txt" : file.filename();
+            AdminKbIngestForm form = AdminKbMultipartForms.toPreviewForm(parts);
+            return DataBufferUtils.join(file.content()).flatMap(dataBuffer -> {
+                try {
+                    byte[] bytes = new byte[dataBuffer.readableByteCount()];
+                    dataBuffer.read(bytes);
+                    return Mono.fromCallable(() -> ApiResponse.ok(
+                                    adminKbService.previewSplit(filename, bytes, form)))
+                            .subscribeOn(Schedulers.boundedElastic());
+                } finally {
+                    DataBufferUtils.release(dataBuffer);
+                }
+            });
+        }));
+    }
+
+    @PostMapping(value = "/documents/preview-split", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public Mono<ApiResponse<SplitPreviewResult>> previewSplitJson(@RequestBody AdminKbIngestTextRequest request) {
         return CurrentAdmin.require().flatMap(admin ->
-                DataBufferUtils.join(file.content()).flatMap(dataBuffer -> {
-                    try {
-                        byte[] bytes = new byte[dataBuffer.readableByteCount()];
-                        dataBuffer.read(bytes);
-                        return Mono.fromCallable(() -> ApiResponse.ok(adminKbService.ingestFile(
-                                        admin, filename, bytes, title, collection, docId,
-                                        AdminKbService.parseAclRoles(aclRoles),
-                                        chunkSize, overlap, minChunkLengthToKeep, chapterSplitEnabled)))
-                                .subscribeOn(Schedulers.boundedElastic());
-                    } finally {
-                        DataBufferUtils.release(dataBuffer);
-                    }
-                }));
+                Mono.fromCallable(() -> ApiResponse.ok(adminKbService.previewSplitText(request)))
+                        .subscribeOn(Schedulers.boundedElastic()));
     }
 
     @PostMapping("/documents/{docId}/versions/{versionId}/deprecate")
