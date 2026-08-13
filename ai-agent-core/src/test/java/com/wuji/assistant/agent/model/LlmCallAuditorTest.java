@@ -33,16 +33,19 @@ class LlmCallAuditorTest {
         AtomicReference<String> requestJson = new AtomicReference<>();
         AtomicReference<String> responseJson = new AtomicReference<>();
         when(jdbcTemplate.update(anyString(), any(), any(), any(), any(), any(), any(), any(), any(),
-                any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any()))
                 .thenAnswer(inv -> {
-                    requestJson.set(inv.getArgument(16));
-                    responseJson.set(inv.getArgument(17));
+                    requestJson.set(inv.getArgument(18));
+                    responseJson.set(inv.getArgument(19));
                     return 1;
                 });
 
         LlmCallAuditor auditor = new LlmCallAuditor(jdbcTemplate, new ObjectMapper());
         auditor.record(new LlmCallAuditor.AuditParams(
-                "trace", "conv", "msg", "user", "model", "provider",
+                "trace", "conv", "msg", "user",
+                "CHAT", null,
+                "model", "provider",
                 1, false, "SUCCESS", null, 10, 1, 1,
                 Map.of("system", "sys\u0000", "user", "ask", "model", "m"),
                 Map.of("content", "</mm:think>\u00001+1=2")

@@ -132,7 +132,7 @@ public class LlmMemoryExtractOrchestrator {
             traceId = IdGenerator.nextBizId("tr_");
         }
         ModelRouter.AuditContext audit = new ModelRouter.AuditContext(
-                traceId, conversationId, messageId, userId, systemPrompt, userPrompt);
+                traceId, conversationId, messageId, userId, "CHAT", null, systemPrompt, userPrompt);
 
         Duration timeout = cfg.getTimeout() == null ? Duration.ofSeconds(20) : cfg.getTimeout();
         String raw = callWithTimeout(() -> modelRouter.callContent(messages, audit).value(), timeout);

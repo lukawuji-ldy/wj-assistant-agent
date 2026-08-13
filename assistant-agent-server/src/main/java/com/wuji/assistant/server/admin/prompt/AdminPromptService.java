@@ -63,12 +63,13 @@ public class AdminPromptService {
     /**
      * 按 code 聚合列表。
      */
-    public List<AdminPromptSummary> listSummaries() {
+    public List<AdminPromptSummary> listSummaries(String group) {
         return jdbcTemplate.query("""
                 SELECT
                   COALESCE(m.code, d.code) AS code,
                   COALESCE(m.name, d.name) AS name,
                   COALESCE(m.role, d.role) AS role,
+                  COALESCE(m.prompt_group, d.prompt_group) AS prompt_group,
                   m.published_version AS published_version,
                   d.version AS draft_version,
                   (d.version IS NOT NULL) AS has_draft,
@@ -80,10 +81,11 @@ public class AdminPromptService {
                   ) AS latest_version
                 FROM prompt_template m
                 FULL OUTER JOIN (
-                  SELECT code, name, role, version
+                  SELECT code, name, role, version, prompt_group
                   FROM prompt_template_version
                   WHERE status = 'DRAFT'
                 ) d ON m.code = d.code
+                WHERE (? IS NULL OR COALESCE(m.prompt_group, d.prompt_group) = ?)
                 ORDER BY COALESCE(m.code, d.code) ASC
                 """, (rs, rowNum) -> {
             Integer published = rs.getObject("published_version") == null ? null : rs.getInt("published_version");
@@ -98,7 +100,7 @@ public class AdminPromptService {
                     rs.getString("status"),
                     rs.getInt("latest_version")
             );
-        });
+        }, group, group);
     }
 
     /**

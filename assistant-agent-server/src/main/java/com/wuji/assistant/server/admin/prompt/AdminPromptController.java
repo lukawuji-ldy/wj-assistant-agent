@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -30,8 +31,9 @@ public class AdminPromptController {
     }
 
     @GetMapping
-    public Mono<ApiResponse<List<AdminPromptSummary>>> list() {
-        return Mono.fromCallable(() -> ApiResponse.ok(adminPromptService.listSummaries()))
+    public Mono<ApiResponse<List<AdminPromptSummary>>> list(
+            @RequestParam(required = false) String group) {
+        return Mono.fromCallable(() -> ApiResponse.ok(adminPromptService.listSummaries(group)))
                 .subscribeOn(Schedulers.boundedElastic());
     }
 

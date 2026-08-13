@@ -49,10 +49,11 @@ public class LlmCallAuditor {
             OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
             jdbcTemplate.update("""
                     INSERT INTO llm_call_log
-                    (id, call_id, trace_id, conversation_id, message_id, user_id, model_id, provider,
+                    (id, call_id, trace_id, conversation_id, message_id, user_id, biz_source, biz_ref_id,
+                     model_id, provider,
                      attempt, is_fallback, status, error_code, latency_ms, prompt_tokens, completion_tokens,
                      request_json, response_json, create_time)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?)
                     """,
                     IdGenerator.nextLong(),
                     IdGenerator.nextBizId("call_"),
@@ -60,6 +61,8 @@ public class LlmCallAuditor {
                     params.conversationId(),
                     params.messageId(),
                     params.userId(),
+                    params.bizSource(),
+                    params.bizRefId(),
                     params.modelId(),
                     params.provider(),
                     params.attempt(),
@@ -114,6 +117,8 @@ public class LlmCallAuditor {
             String conversationId,
             String messageId,
             String userId,
+            String bizSource,
+            String bizRefId,
             String modelId,
             String provider,
             int attempt,

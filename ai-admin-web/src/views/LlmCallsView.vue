@@ -13,6 +13,10 @@
         <el-option label="Aliyun" value="aliyun" />
         <el-option label="DeepSeek" value="deepseek" />
       </el-select>
+      <el-select v-model="filters.biz_source" placeholder="业务来源" style="width: 140px" clearable @change="reload">
+        <el-option label="智能聊天 (CHAT)" value="CHAT" />
+        <el-option label="录音分析 (VTA)" value="VTA" />
+      </el-select>
       <el-date-picker
         v-model="timeRange"
         type="datetimerange"
@@ -28,6 +32,7 @@
     <el-table :data="rows" v-loading="loading" stripe @row-click="openDetail">
       <el-table-column prop="callId" label="调用 ID" min-width="120" show-overflow-tooltip />
       <el-table-column prop="userId" label="用户" min-width="100" show-overflow-tooltip />
+      <el-table-column prop="bizSource" label="业务来源" min-width="120" show-overflow-tooltip />
       <el-table-column prop="modelId" label="模型" min-width="120" show-overflow-tooltip />
       <el-table-column prop="status" label="状态" width="100">
         <template #default="{ row }">
@@ -113,6 +118,7 @@ const filters = reactive<AdminLlmCallQueryParams>({
   callId: '',
   status: '',
   provider: '',
+  biz_source: '',
   createTimeFrom: '',
   createTimeTo: '',
 })

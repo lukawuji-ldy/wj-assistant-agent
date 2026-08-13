@@ -88,7 +88,7 @@ class ModelRouterTest {
         when(llmClientFactory.getConfig("llm_backup_1")).thenReturn(backup);
 
         ModelRouter.AuditContext audit = new ModelRouter.AuditContext(
-                "t1", "c1", "m1", "u1", "sys", "user");
+                "t1", "c1", "m1", "u1", "CHAT", null, "sys", "user");
 
         ModelRouter.RoutedResult<String> result = modelRouter.execute(audit, routed -> {
             if ("llm_primary".equals(routed.configId())) {
@@ -117,7 +117,7 @@ class ModelRouterTest {
         when(llmClientFactory.getConfig("llm_primary")).thenReturn(primary);
 
         ModelRouter.AuditContext audit = new ModelRouter.AuditContext(
-                "t1", "c1", "m1", "u1", "sys", "user");
+                "t1", "c1", "m1", "u1", "CHAT", null, "sys", "user");
 
         WujiException thrown = assertThrows(WujiException.class, () ->
                 modelRouter.execute(audit, routed -> {
@@ -137,7 +137,7 @@ class ModelRouterTest {
                 .thenThrow(new WujiException(ErrorCode.MODEL_UNAVAILABLE, "key missing"));
 
         ModelRouter.AuditContext audit = new ModelRouter.AuditContext(
-                "t1", "c1", "m1", "u1", "sys", "user");
+                "t1", "c1", "m1", "u1", "CHAT", null, "sys", "user");
 
         WujiException thrown = assertThrows(WujiException.class, () ->
                 modelRouter.execute(audit, routed -> "never"));
@@ -172,7 +172,7 @@ class ModelRouterTest {
         ResourceAccessException ex = new ResourceAccessException(
                 "interrupted", new IOException(new InterruptedException()));
         ModelRouter.AuditContext audit = new ModelRouter.AuditContext(
-                "t1", "c1", "m1", "u1", "sys", "user");
+                "t1", "c1", "m1", "u1", "CHAT", null, "sys", "user");
 
         WujiException thrown = assertThrows(WujiException.class, () ->
                 modelRouter.execute(audit, routed -> {
@@ -213,7 +213,7 @@ class ModelRouterTest {
 
         AtomicInteger primaryHits = new AtomicInteger();
         ModelRouter.AuditContext audit = new ModelRouter.AuditContext(
-                "t1", "c1", "m1", "u1", "sys", "user");
+                "t1", "c1", "m1", "u1", "CHAT", null, "sys", "user");
 
         ModelRouter.RoutedResult<String> result = modelRouter.execute(audit, routed -> {
             if ("llm_primary".equals(routed.configId())) {
@@ -237,7 +237,7 @@ class ModelRouterTest {
         when(llmClientFactory.getConfig("llm_backup_1")).thenReturn(backup);
 
         ModelRouter.AuditContext audit = new ModelRouter.AuditContext(
-                "t1", "c1", "m1", "u1", "sys", "user");
+                "t1", "c1", "m1", "u1", "CHAT", null, "sys", "user");
         ModelRouter.RoutedResult<String> result = modelRouter.execute(audit, routed -> {
             if ("llm_primary".equals(routed.configId())) {
                 throw SwallowedLlmErrors.toException(

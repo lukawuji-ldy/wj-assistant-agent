@@ -8,6 +8,8 @@ export interface AdminLlmCallSummary {
   messageId: string | null
   modelId: string
   provider: string | null
+  bizSource: string | null
+  bizRefId: string | null
   attempt: number
   isFallback: boolean
   status: string
@@ -38,6 +40,8 @@ export interface AdminLlmCallQueryParams {
   traceId?: string
   modelId?: string
   provider?: string
+  biz_source?: string
+  biz_ref_id?: string
   status?: string
   isFallback?: boolean
   createTimeFrom?: string

@@ -23,7 +23,7 @@ import java.util.Optional;
 public class AdminLlmCallLogRepository {
 
     private static final String SUMMARY_COLS = """
-            call_id, trace_id, user_id, conversation_id, message_id, model_id, provider,
+            call_id, trace_id, user_id, conversation_id, message_id, model_id, provider, biz_source, biz_ref_id,
             attempt, is_fallback, status, error_code, latency_ms, prompt_tokens, completion_tokens, create_time
             """;
 
@@ -43,6 +43,8 @@ public class AdminLlmCallLogRepository {
             rs.getString("message_id"),
             rs.getString("model_id"),
             rs.getString("provider"),
+            rs.getString("biz_source"),
+            rs.getString("biz_ref_id"),
             rs.getInt("attempt"),
             rs.getBoolean("is_fallback"),
             rs.getString("status"),
@@ -85,7 +87,7 @@ public class AdminLlmCallLogRepository {
      */
     public Optional<AdminLlmCallLogDetail> findByCallId(String callId) {
         List<AdminLlmCallLogDetail> rows = jdbcTemplate.query("""
-                SELECT call_id, trace_id, user_id, conversation_id, message_id, model_id, provider,
+                SELECT call_id, trace_id, user_id, conversation_id, message_id, model_id, provider, biz_source, biz_ref_id,
                        attempt, is_fallback, status, error_code, latency_ms, prompt_tokens, completion_tokens,
                        request_json, response_json, create_time
                 FROM llm_call_log
@@ -98,6 +100,8 @@ public class AdminLlmCallLogRepository {
                 rs.getString("message_id"),
                 rs.getString("model_id"),
                 rs.getString("provider"),
+                rs.getString("biz_source"),
+                rs.getString("biz_ref_id"),
                 rs.getInt("attempt"),
                 rs.getBoolean("is_fallback"),
                 rs.getString("status"),
@@ -122,6 +126,8 @@ public class AdminLlmCallLogRepository {
         appendEq(sql, args, "trace_id", query.traceId());
         appendEq(sql, args, "model_id", query.modelId());
         appendEq(sql, args, "provider", query.provider());
+        appendEq(sql, args, "biz_source", query.bizSource());
+        appendEq(sql, args, "biz_ref_id", query.bizRefId());
         appendEq(sql, args, "status", query.status());
         if (query.isFallback() != null) {
             appendClause(sql);

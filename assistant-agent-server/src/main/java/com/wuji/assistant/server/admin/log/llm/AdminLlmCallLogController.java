@@ -37,6 +37,8 @@ public class AdminLlmCallLogController {
             @RequestParam(required = false) String traceId,
             @RequestParam(required = false) String modelId,
             @RequestParam(required = false) String provider,
+            @RequestParam(required = false, name = "biz_source") String bizSource,
+            @RequestParam(required = false, name = "biz_ref_id") String bizRefId,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Boolean isFallback,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant createTimeFrom,
@@ -49,7 +51,7 @@ public class AdminLlmCallLogController {
             @RequestParam(defaultValue = "20") int size) {
         return CurrentAdmin.require().flatMap(admin ->
                 Mono.fromCallable(() -> ApiResponse.ok(adminLlmCallLogService.list(
-                                userId, conversationId, messageId, callId, traceId, modelId, provider, status,
+                                userId, conversationId, messageId, callId, traceId, modelId, provider, bizSource, bizRefId, status,
                                 isFallback, createTimeFrom, createTimeTo,
                                 latencyMsMin, latencyMsMax, promptTokensMin, promptTokensMax, page, size)))
                         .subscribeOn(Schedulers.boundedElastic()));

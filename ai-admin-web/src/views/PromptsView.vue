@@ -3,8 +3,12 @@
     <el-card class="list-card">
       <div class="toolbar">
         <el-button type="primary" @click="openCreateCode">新建 code / 版本</el-button>
-        <el-button @click="loadSummaries">刷新</el-button>
+        <el-button @click="() => loadSummaries()">刷新</el-button>
       </div>
+      <el-tabs v-model="promptGroup" @tab-change="onGroupChange" style="margin-bottom: 12px">
+        <el-tab-pane label="智能聊天 (CHAT)" name="CHAT" />
+        <el-tab-pane label="录音分析 (VTA)" name="VTA" />
+      </el-tabs>
       <el-table
         :data="summaries"
         v-loading="loadingList"
@@ -36,7 +40,12 @@
       <template #header>
         <div class="detail-header">
           <span>{{ selectedCode || '选择左侧 code 查看版本' }}</span>
-          <el-button v-if="selectedCode" type="primary" @click="openNewVersion">新建版本</el-button>
+          <div class="detail-actions">
+            <el-button v-if="selectedDraft" type="warning" @click="openEditDraft(selectedDraft)">
+              编辑草稿 v{{ selectedDraft.version }}
+            </el-button>
+            <el-button v-if="selectedCode" type="primary" @click="openNewVersion">新建版本</el-button>
+          </div>
         </div>
       </template>
       <el-table :data="versions" v-loading="loadingVersions" stripe empty-text="暂无版本">
@@ -57,9 +66,15 @@
           </template>
         </el-table-column>
         <el-table-column prop="content" label="内容摘要" min-width="200" show-overflow-tooltip />
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column label="操作" width="280" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="showContent(row)">查看</el-button>
+            <el-button
+              v-if="row.status === 'DRAFT'"
+              link
+              type="warning"
+              @click="openEditDraft(row)"
+            >编辑</el-button>
             <el-button
               v-if="row.status === 'DRAFT'"
               link
@@ -78,7 +93,14 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="createVisible" :title="createTitle" width="640px">
+    <el-dialog
+      v-model="createVisible"
+      :title="createTitle"
+      width="880px"
+      top="6vh"
+      class="prompt-create-dialog"
+      destroy-on-close
+    >
       <el-form label-width="90px">
         <el-form-item v-if="creatingNewCode" label="code">
           <el-input v-model="versionForm.code" placeholder="如 agent.default.system" />
@@ -93,8 +115,11 @@
         <el-form-item label="改动说明">
           <el-input v-model="versionForm.changeNote" placeholder="本次版本的改动内容..." />
         </el-form-item>
-        <el-form-item label="content">
-          <el-input v-model="versionForm.content" type="textarea" :rows="10" />
+        <el-form-item label="content" class="content-item">
+          <MarkdownSyntaxEditor v-model="versionForm.content" />
+          <div class="content-editor-hint">
+            Markdown 语法高亮编辑（标题、列表、代码块着色）；查看页才做渲染预览。落库仍是原文。
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -103,6 +128,40 @@
         <el-button type="primary" :loading="saving" @click="submitVersion(true)">保存并发布</el-button>
       </template>
     </el-dialog>
+
+    <el-drawer v-model="viewVisible" size="56%" class="prompt-view-drawer" destroy-on-close>
+      <template #header>
+        <div class="prompt-view-header">
+          <div class="prompt-view-title">
+            <span class="prompt-view-code">{{ viewing?.code }} · v{{ viewing?.version }}</span>
+            <el-tag v-if="viewing" :type="getStatusTagType(viewing.status)" size="small">
+              {{ viewing.status }}
+            </el-tag>
+            <el-tag v-if="viewing" size="small" effect="plain">{{ viewing.role }}</el-tag>
+          </div>
+          <el-button type="primary" link @click="copyViewContent">复制原文</el-button>
+        </div>
+      </template>
+
+      <div v-if="viewing" class="prompt-view">
+        <el-descriptions :column="2" size="small" class="prompt-view-meta" border>
+          <el-descriptions-item label="名称">{{ viewing.name || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="改动说明">{{ viewing.changeNote || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="创建者">{{ viewing.createdBy || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="创建时间">{{ formatTime(viewing.createTime) }}</el-descriptions-item>
+          <el-descriptions-item label="发布时间" :span="2">{{ formatTime(viewing.publishTime) }}</el-descriptions-item>
+        </el-descriptions>
+
+        <div class="prompt-view-body">
+          <div v-if="viewHtml" class="prompt-md" v-html="viewHtml" />
+          <el-empty v-else description="暂无内容" />
+        </div>
+      </div>
+
+      <template #footer>
+        <el-button @click="viewVisible = false">关闭</el-button>
+      </template>
+    </el-drawer>
 
     <el-dialog v-model="diffVisible" title="版本对比" width="800px" top="5vh">
       <div class="diff-header">
@@ -151,6 +210,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as promptsApi from '@/api/prompts'
 import type { AdminPromptSummary, AdminPromptVersionView, AdminPromptDiffView } from '@/api/prompts'
+import { renderPromptMarkdown } from '@/utils/promptMarkdown'
+import MarkdownSyntaxEditor from '@/components/MarkdownSyntaxEditor.vue'
 
 const loadingList = ref(false)
 const loadingVersions = ref(false)
@@ -158,8 +219,15 @@ const saving = ref(false)
 const summaries = ref<AdminPromptSummary[]>([])
 const versions = ref<AdminPromptVersionView[]>([])
 const selectedCode = ref('')
+const promptGroup = ref<'CHAT' | 'VTA'>('CHAT')
 const createVisible = ref(false)
 const creatingNewCode = ref(false)
+const editingDraft = ref(false)
+const editingDraftVersion = ref<number | null>(null)
+const selectedDraft = computed(() => versions.value.find((row) => row.status === 'DRAFT') ?? null)
+const viewVisible = ref(false)
+const viewing = ref<AdminPromptVersionView | null>(null)
+const viewHtml = computed(() => renderPromptMarkdown(viewing.value?.content))
 
 const diffVisible = ref(false)
 const loadingDiff = ref(false)
@@ -175,9 +243,15 @@ const versionForm = reactive({
   changeNote: '',
 })
 
-const createTitle = computed(() =>
-  creatingNewCode.value ? '新建提示词 code' : `新建版本 · ${selectedCode.value}`,
-)
+const createTitle = computed(() => {
+  if (creatingNewCode.value) {
+    return '新建提示词 code'
+  }
+  if (editingDraft.value) {
+    return `编辑草稿 · ${selectedCode.value} v${editingDraftVersion.value}`
+  }
+  return `新建版本 · ${selectedCode.value}`
+})
 
 function formatTime(time: string | null) {
   if (!time) return '-'
@@ -201,13 +275,21 @@ function getStatusTagType(status: string) {
   }
 }
 
-async function loadSummaries() {
+async function loadSummaries(group: 'CHAT' | 'VTA' = promptGroup.value) {
   loadingList.value = true
   try {
-    summaries.value = await promptsApi.listPromptSummaries()
+    summaries.value = await promptsApi.listPromptSummaries(group)
   } finally {
     loadingList.value = false
   }
+}
+
+function onGroupChange(name: string | number) {
+  const group = name === 'VTA' ? 'VTA' : 'CHAT'
+  promptGroup.value = group
+  selectedCode.value = ''
+  versions.value = []
+  void loadSummaries(group)
 }
 
 async function loadVersions(code: string) {
@@ -230,6 +312,8 @@ function onSelect(row: AdminPromptSummary | undefined) {
 
 function openCreateCode() {
   creatingNewCode.value = true
+  editingDraft.value = false
+  editingDraftVersion.value = null
   versionForm.code = ''
   versionForm.name = ''
   versionForm.role = 'SYSTEM'
@@ -238,14 +322,48 @@ function openCreateCode() {
   createVisible.value = true
 }
 
-function openNewVersion() {
+function fillVersionForm(row: Pick<AdminPromptVersionView, 'code' | 'name' | 'role' | 'content' | 'changeNote'>) {
+  versionForm.code = row.code
+  versionForm.name = row.name
+  versionForm.role = row.role
+  versionForm.content = row.content
+  versionForm.changeNote = row.changeNote || ''
+}
+
+function openEditDraft(row: AdminPromptVersionView) {
   creatingNewCode.value = false
-  versionForm.code = selectedCode.value
+  editingDraft.value = true
+  editingDraftVersion.value = row.version
+  fillVersionForm(row)
+  createVisible.value = true
+}
+
+async function openNewVersion() {
+  const draft = selectedDraft.value
+  if (draft) {
+    await ElMessageBox.confirm(
+      `已有未发布草稿 v${draft.version}，同 code 只能有一份草稿。保存会覆盖该草稿。是否改为编辑草稿？`,
+      '提示',
+      {
+        type: 'warning',
+        confirmButtonText: '编辑草稿',
+        cancelButtonText: '取消',
+      },
+    )
+    openEditDraft(draft)
+    return
+  }
+  creatingNewCode.value = false
+  editingDraft.value = false
+  editingDraftVersion.value = null
   const latest = versions.value[0]
-  versionForm.name = latest?.name || selectedCode.value
-  versionForm.role = latest?.role || 'SYSTEM'
-  versionForm.content = latest?.content || ''
-  versionForm.changeNote = ''
+  fillVersionForm({
+    code: selectedCode.value,
+    name: latest?.name || selectedCode.value,
+    role: latest?.role || 'SYSTEM',
+    content: latest?.content || '',
+    changeNote: '',
+  })
   createVisible.value = true
 }
 
@@ -264,7 +382,7 @@ async function submitVersion(publish: boolean) {
       changeNote: versionForm.changeNote,
       publish,
     })
-    ElMessage.success(publish ? '已发布' : '草稿已保存')
+    ElMessage.success(publish ? '已发布' : editingDraft.value ? '草稿已更新' : '草稿已保存')
     createVisible.value = false
     await loadSummaries()
     selectedCode.value = code
@@ -294,11 +412,19 @@ async function onRollback(row: AdminPromptVersionView) {
   await loadVersions(row.code)
 }
 
-async function showContent(row: AdminPromptVersionView) {
-  await ElMessageBox.alert(row.content, `${row.code} @ v${row.version}`, {
-    confirmButtonText: '关闭',
-    customClass: 'prompt-content-box',
-  })
+function showContent(row: AdminPromptVersionView) {
+  viewing.value = row
+  viewVisible.value = true
+}
+
+async function copyViewContent() {
+  const text = viewing.value?.content ?? ''
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('已复制原文')
+  } catch {
+    ElMessage.warning('复制失败，请手动选择文本')
+  }
 }
 
 function openDiff(row: AdminPromptVersionView) {
@@ -350,6 +476,12 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
+}
+.detail-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
 }
 .time-info {
   display: flex;
@@ -417,6 +549,152 @@ onMounted(() => {
 .mx-4 {
   margin-left: 16px;
   margin-right: 16px;
+}
+.content-item :deep(.el-form-item__content) {
+  display: block;
+}
+.content-editor-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #9ca3af;
+  line-height: 1.4;
+}
+.prompt-view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding-right: 28px;
+}
+.prompt-view-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.prompt-view-code {
+  font-weight: 600;
+  color: #111827;
+  word-break: break-all;
+}
+.prompt-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+.prompt-view-meta {
+  flex-shrink: 0;
+}
+.prompt-view-body {
+  min-height: 240px;
+  padding: 16px 20px 20px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+.prompt-md {
+  color: #1f2937;
+  font-size: 14px;
+  line-height: 1.7;
+}
+.prompt-md :deep(> :first-child) {
+  margin-top: 0;
+}
+.prompt-md :deep(h1),
+.prompt-md :deep(h2),
+.prompt-md :deep(h3),
+.prompt-md :deep(h4) {
+  margin: 1.25em 0 0.5em;
+  color: #111827;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.prompt-md :deep(h1) {
+  font-size: 22px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.prompt-md :deep(h2) {
+  font-size: 18px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #f3f4f6;
+}
+.prompt-md :deep(h3) {
+  font-size: 15px;
+  margin: 1.35em 0 0.55em;
+  padding-left: 10px;
+  border-left: 3px solid #3b82f6;
+}
+.prompt-md :deep(h3:first-child) {
+  margin-top: 0;
+}
+.prompt-md :deep(p),
+.prompt-md :deep(ul),
+.prompt-md :deep(ol) {
+  margin: 0.65em 0;
+}
+.prompt-md :deep(ul),
+.prompt-md :deep(ol) {
+  padding-left: 1.4em;
+}
+.prompt-md :deep(li + li) {
+  margin-top: 0.25em;
+}
+.prompt-md :deep(blockquote) {
+  margin: 0.8em 0;
+  padding: 4px 12px;
+  color: #4b5563;
+  border-left: 3px solid #d1d5db;
+  background: #f9fafb;
+}
+.prompt-md :deep(code) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  padding: 0.15em 0.4em;
+  background: #f3f4f6;
+  border-radius: 4px;
+}
+.prompt-md :deep(pre) {
+  margin: 0.9em 0;
+  padding: 12px 14px;
+  background: #f6f8fa;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+.prompt-md :deep(pre code) {
+  padding: 0;
+  background: transparent;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre;
+}
+.prompt-md :deep(table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.9em 0;
+  font-size: 13px;
+}
+.prompt-md :deep(th),
+.prompt-md :deep(td) {
+  border: 1px solid #e5e7eb;
+  padding: 6px 10px;
+  text-align: left;
+}
+.prompt-md :deep(th) {
+  background: #f9fafb;
+  font-weight: 600;
+}
+.prompt-md :deep(hr) {
+  margin: 1.4em 0;
+  border: none;
+  border-top: 1px solid #e5e7eb;
+}
+.prompt-md :deep(a) {
+  color: #2563eb;
 }
 @media (max-width: 1200px) {
   .prompts {

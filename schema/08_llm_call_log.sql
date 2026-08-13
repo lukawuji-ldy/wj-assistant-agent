@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS llm_call_log
     conversation_id   VARCHAR(64),
     message_id        VARCHAR(64),
     user_id           VARCHAR(64),
+    biz_source        VARCHAR(32)  NOT NULL DEFAULT 'CHAT', -- CHAT|VTA（业务来源）
+    biz_ref_id        VARCHAR(64), -- CHAT 可空；VTA 关联 analysis_job.job_id
     model_id          VARCHAR(128) NOT NULL,
     provider          VARCHAR(64),
     attempt           INT          NOT NULL DEFAULT 1,
@@ -24,6 +26,8 @@ CREATE TABLE IF NOT EXISTS llm_call_log
 
 CREATE INDEX IF NOT EXISTS idx_llm_call_conv ON llm_call_log (conversation_id, create_time);
 CREATE INDEX IF NOT EXISTS idx_llm_call_user ON llm_call_log (user_id, create_time);
+CREATE INDEX IF NOT EXISTS idx_llm_call_biz_source ON llm_call_log (biz_source, create_time);
+CREATE INDEX IF NOT EXISTS idx_llm_call_biz_ref ON llm_call_log (biz_ref_id, create_time);
 CREATE INDEX IF NOT EXISTS idx_llm_call_trace ON llm_call_log (trace_id);
 
 COMMENT ON TABLE llm_call_log IS '每次 LLM 调用的完整入模参数审计（评测预留）';
@@ -33,6 +37,8 @@ COMMENT ON COLUMN llm_call_log.trace_id IS '链路追踪 ID';
 COMMENT ON COLUMN llm_call_log.conversation_id IS '会话 ID';
 COMMENT ON COLUMN llm_call_log.message_id IS '关联消息 ID';
 COMMENT ON COLUMN llm_call_log.user_id IS '用户 ID';
+COMMENT ON COLUMN llm_call_log.biz_source IS '业务来源：CHAT|VTA';
+COMMENT ON COLUMN llm_call_log.biz_ref_id IS '业务引用键：VTA=analysis_job.job_id';
 COMMENT ON COLUMN llm_call_log.model_id IS '实际使用的模型/config';
 COMMENT ON COLUMN llm_call_log.provider IS '提供商';
 COMMENT ON COLUMN llm_call_log.attempt IS '第几次尝试';

@@ -198,6 +198,8 @@ public class ChatFacade {
                 ctx.conversation().getConversationId(),
                 ctx.assistantMsg().getMessageId(),
                 ctx.userId(),
+                "CHAT",
+                null,
                 ctx.systemPrompt(),
                 ctx.userPrompt()
         );
@@ -436,6 +438,8 @@ public class ChatFacade {
                             ctx.conversation().getConversationId(),
                             ctx.assistantMsg().getMessageId(),
                             ctx.userId(),
+                            "CHAT",
+                            null,
                             routed.configId(),
                             routed.config().getProvider(),
                             attempt,
@@ -520,6 +524,8 @@ public class ChatFacade {
                 ctx.conversation().getConversationId(),
                 ctx.assistantMsg().getMessageId(),
                 ctx.userId(),
+                "CHAT",
+                null,
                 routed.configId(),
                 routed.config().getProvider(),
                 attempt,

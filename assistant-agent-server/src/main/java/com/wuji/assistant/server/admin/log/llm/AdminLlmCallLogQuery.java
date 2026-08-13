@@ -15,6 +15,8 @@ public record AdminLlmCallLogQuery(
         String traceId,
         String modelId,
         String provider,
+        String bizSource,
+        String bizRefId,
         String status,
         Boolean isFallback,
         Instant createTimeFrom,

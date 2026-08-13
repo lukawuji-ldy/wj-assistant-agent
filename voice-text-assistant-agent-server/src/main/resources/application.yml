@@ -1,0 +1,91 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: voice-text-assistant-agent-server
+  http:
+    client:
+      factory: jdk
+  datasource:
+    url: jdbc:postgresql://127.0.0.1:5432/vector_test
+    username: postgres
+    password: 1234567890
+    driver-class-name: org.postgresql.Driver
+  # 与 assistant-agent-server 共用同一 PostgreSQL / flyway_schema_history。
+  # 迁移权威仅在 assistant-agent-server（含 V22 提示词、V23 analysis_job）；
+  # 本进程禁止再跑 Flyway，否则 classpath 只有部分脚本时会 Validate failed（missing migrations）。
+  flyway:
+    enabled: false
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiChatAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiEmbeddingAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiImageAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioSpeechAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioTranscriptionAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiModerationAutoConfiguration
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+wuji:
+  security:
+    jwt:
+      secret: ${WUJI_JWT_SECRET:change-me-wuji-assistant-jwt-secret-key-32b}
+      expire-hours: 72
+      issuer: wuji-assistant
+    api-key-secret: ${WUJI_API_KEY_SECRET:change-me-wuji-api-key-secret-32bytes!!}
+
+  model:
+    primary-config-id: llm_primary
+    fallback-config-ids:
+      - llm_backup_1
+    retry:
+      max-attempts: 1
+      backoff: 1s
+    timeout: 60s
+    rate-limit-codes: [429]
+    api-key-override: ${WUJI_LLM_API_KEY:}
+
+  agent:
+    id: default
+    max-tool-rounds: 8
+    max-model-calls: 16
+    system-prompt-code: agent.default.system
+    user-prompt-code: agent.default.user
+    memory-window-size: 20
+    checkpoint:
+      type: postgres
+      create-tables: false
+      host: 127.0.0.1
+      port: 5432
+      database: vector_test
+      username: postgres
+      password: ${spring.datasource.password}
+    stream:
+      heartbeat-interval: 15s
+      resume-buffer-events: 200
+      resume-ttl: 10m
+
+  # VTA 无 RAG/Memory；关闭默认开启的 embedding，避免扫到 OpenAiEmbeddingClient 却无业务用途
+  rag:
+    embedding-enabled: false
+    as-tool: false
+
+  mcp:
+    enabled: false
+
+  vta:
+    input:
+      max-chars: 20000
+    node-timeout: 60s
+    job-timeout: 150s
+
+    sse:
+      resume-ttl: 10m
+      resume-buffer-events: 200
+

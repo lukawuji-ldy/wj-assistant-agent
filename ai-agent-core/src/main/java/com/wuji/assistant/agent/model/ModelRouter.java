@@ -296,6 +296,8 @@ public class ModelRouter {
                 audit.conversationId(),
                 audit.messageId(),
                 audit.userId(),
+                audit.bizSource(),
+                audit.bizRefId(),
                 routed.configId(),
                 routed.config().getProvider(),
                 attempt,
@@ -321,6 +323,8 @@ public class ModelRouter {
                 audit.conversationId(),
                 audit.messageId(),
                 audit.userId(),
+                audit.bizSource(),
+                audit.bizRefId(),
                 routed.configId(),
                 routed.config().getProvider(),
                 attempt,
@@ -443,6 +447,8 @@ public class ModelRouter {
             String conversationId,
             String messageId,
             String userId,
+            String bizSource,
+            String bizRefId,
             String systemPrompt,
             String userPrompt
     ) {

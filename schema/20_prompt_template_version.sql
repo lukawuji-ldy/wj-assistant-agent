@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS prompt_template_version
     version      INT          NOT NULL,
     name         VARCHAR(128) NOT NULL,
     role         VARCHAR(20)  NOT NULL,
+    prompt_group VARCHAR(32) NOT NULL DEFAULT 'CHAT',
     content      TEXT         NOT NULL,
     status       VARCHAR(20)  NOT NULL,
     change_note  VARCHAR(512),
@@ -24,6 +25,7 @@ COMMENT ON COLUMN prompt_template_version.code IS '模板编码';
 COMMENT ON COLUMN prompt_template_version.version IS '版本号，同 code 自增';
 COMMENT ON COLUMN prompt_template_version.name IS '该版名称';
 COMMENT ON COLUMN prompt_template_version.role IS 'SYSTEM|USER';
+COMMENT ON COLUMN prompt_template_version.prompt_group IS '提示词分组：CHAT|VTA';
 COMMENT ON COLUMN prompt_template_version.content IS '该版正文快照';
 COMMENT ON COLUMN prompt_template_version.status IS 'DRAFT|PUBLISHED|SUPERSEDED';
 COMMENT ON COLUMN prompt_template_version.change_note IS '变更说明';

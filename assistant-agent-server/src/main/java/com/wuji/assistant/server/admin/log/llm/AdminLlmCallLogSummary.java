@@ -15,6 +15,8 @@ public record AdminLlmCallLogSummary(
         String messageId,
         String modelId,
         String provider,
+        String bizSource,
+        String bizRefId,
         int attempt,
         boolean isFallback,
         String status,

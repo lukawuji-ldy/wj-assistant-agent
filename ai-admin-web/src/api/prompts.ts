@@ -31,8 +31,10 @@ export interface AdminPromptDiffView {
   to: AdminPromptVersionView
 }
 
-export async function listPromptSummaries() {
-  const { data } = await http.get<ApiResponse<AdminPromptSummary[]>>('/api/admin/prompts')
+export async function listPromptSummaries(group?: string) {
+  const { data } = await http.get<ApiResponse<AdminPromptSummary[]>>('/api/admin/prompts', {
+    params: group ? { group } : undefined,
+  })
   return data.data
 }
 
