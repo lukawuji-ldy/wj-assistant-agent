@@ -1,6 +1,5 @@
 package com.wuji.assistant.server.security;
 
-import com.wuji.assistant.server.config.AdminJwtProperties;
 import com.wuji.assistant.server.config.JwtProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -17,13 +16,15 @@ import org.springframework.security.web.server.authentication.HttpStatusServerEn
 import reactor.core.publisher.Mono;
 
 /**
- * WebFlux Security：User JWT + Admin JWT 双轨；公开登录/健康检查。
+ * WebFlux Security：仅 User JWT；公开登录/健康检查。
+ * <p>
+ * Admin API 已迁至 {@code wj-assistant-agent-manage}。
  *
  * @author liudy
  */
 @Configuration
 @EnableWebFluxSecurity
-@EnableConfigurationProperties({JwtProperties.class, AdminJwtProperties.class})
+@EnableConfigurationProperties({JwtProperties.class})
 public class SecurityConfig {
 
     /**
@@ -40,7 +41,7 @@ public class SecurityConfig {
      * 安全过滤链。
      *
      * @param http      http 安全
-     * @param jwtFilter JWT 过滤器（路径分流）
+     * @param jwtFilter JWT 过滤器
      * @return 链
      */
     @Bean
@@ -59,8 +60,6 @@ public class SecurityConfig {
                 .authorizeExchange(ex -> ex
                         .pathMatchers("/api/health", "/actuator/health", "/actuator/info").permitAll()
                         .pathMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
-                        .pathMatchers(HttpMethod.POST, "/api/admin/auth/login").permitAll()
-                        .pathMatchers("/api/admin/**").authenticated()
                         .anyExchange().authenticated())
                 .addFilterAt(jwtFilter, SecurityWebFiltersOrder.AUTHENTICATION)
                 .build();

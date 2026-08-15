@@ -60,14 +60,6 @@ wuji:
       expire-hours: 72
       issuer: wuji-assistant
     api-key-secret: ${WUJI_API_KEY_SECRET:change-me-wuji-api-key-secret-32bytes!!}
-  admin:
-    security:
-      jwt:
-        secret: ${WUJI_ADMIN_JWT_SECRET:change-me-wuji-admin-jwt-secret-key-32bytes}
-        expire-hours: 24
-        issuer: wuji-assistant-admin
-    kb:
-      acl-role-suggestions: admin,viewer
   model:
     primary-config-id: llm_primary
     fallback-config-ids:

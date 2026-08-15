@@ -45,7 +45,6 @@ public class DevSeedRunner implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) {
         seedUser();
-        seedAdminUser();
         seedLlm();
         seedPrompt();
         seedRagSample();
@@ -124,30 +123,6 @@ public class DevSeedRunner implements ApplicationRunner {
                 """,
                 1L, "u_admin", "admin", hash, "管理员", "default", "admin", "ACTIVE", now, now);
         log.info("seeded sys_user admin (local password admin123; change in production)");
-    }
-
-    /**
-     * 后台运营账号（admin_user），与聊天 sys_user.admin 同名不同表。
-     */
-    private void seedAdminUser() {
-        Timestamp now = Timestamp.from(Instant.now());
-        String hash = passwordEncoder.encode("admin123");
-        Integer cnt = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM admin_user WHERE username = ?", Integer.class, "admin");
-        if (cnt != null && cnt > 0) {
-            jdbcTemplate.update(
-                    "UPDATE admin_user SET password_hash = ?, update_time = ? WHERE username = ? AND is_builtin = TRUE",
-                    hash, now, "admin");
-            log.info("refreshed local admin_user password hash (console admin)");
-            return;
-        }
-        jdbcTemplate.update("""
-                INSERT INTO admin_user
-                (id, admin_id, username, password_hash, display_name, role, status, is_builtin, create_time, update_time)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                1L, "a_admin", "admin", hash, "超级管理员", "SUPER_ADMIN", "ACTIVE", true, now, now);
-        log.info("seeded admin_user admin (local password admin123; change in production)");
     }
 
     private void seedLlm() {
