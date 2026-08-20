@@ -10,6 +10,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "wuji.rag")
 public class WujiRagProperties {
 
+    /** pgvector | elasticsearch */
+    private String vectorBackend = "pgvector";
+
     private boolean asTool = true;
     private int topK = 5;
     private double similarityThreshold = 0.72;
@@ -26,8 +29,32 @@ public class WujiRagProperties {
     private int chunkOverlap = 80;
     private int minChunkLengthToKeep = 50;
     private boolean chapterSplitEnabled = true;
+    private final Embedding embedding = new Embedding();
     private final Splitter splitter = new Splitter();
     private final Preprocess preprocess = new Preprocess();
+    private final Elasticsearch elasticsearch = new Elasticsearch();
+
+    public String getVectorBackend() {
+        return vectorBackend;
+    }
+
+    public void setVectorBackend(String vectorBackend) {
+        this.vectorBackend = vectorBackend;
+    }
+
+    public boolean isElasticsearchBackend() {
+        return "elasticsearch".equalsIgnoreCase(vectorBackend);
+    }
+
+    /**
+     * 检索可靠分阈值：ES 模式用 elasticsearch.min-reliable-score，否则 min-reliable-score。
+     */
+    public double getEffectiveMinReliableScore() {
+        if (isElasticsearchBackend()) {
+            return elasticsearch.getMinReliableScore();
+        }
+        return minReliableScore;
+    }
 
     public boolean isAsTool() {
         return asTool;
@@ -149,12 +176,146 @@ public class WujiRagProperties {
         this.chapterSplitEnabled = chapterSplitEnabled;
     }
 
+    public Embedding getEmbedding() {
+        return embedding;
+    }
+
     public Splitter getSplitter() {
         return splitter;
     }
 
     public Preprocess getPreprocess() {
         return preprocess;
+    }
+
+    public Elasticsearch getElasticsearch() {
+        return elasticsearch;
+    }
+
+    /**
+     * 批量 Embedding（入库 / 重建）限速与 429 退避；单 chunk 刷新不使用。
+     * 实际执行侧见 {@code ai-rag} {@code RagVectorProperties.Embedding} / {@code EmbeddingBulkThrottle}。
+     */
+    public static class Embedding {
+
+        private long requestIntervalMs = 1000L;
+        private int maxRetriesOn429 = 8;
+        private long retryBackoffMs = 2000L;
+        private long retryBackoffMaxMs = 60000L;
+
+        public long getRequestIntervalMs() {
+            return requestIntervalMs;
+        }
+
+        public void setRequestIntervalMs(long requestIntervalMs) {
+            this.requestIntervalMs = requestIntervalMs;
+        }
+
+        public int getMaxRetriesOn429() {
+            return maxRetriesOn429;
+        }
+
+        public void setMaxRetriesOn429(int maxRetriesOn429) {
+            this.maxRetriesOn429 = maxRetriesOn429;
+        }
+
+        public long getRetryBackoffMs() {
+            return retryBackoffMs;
+        }
+
+        public void setRetryBackoffMs(long retryBackoffMs) {
+            this.retryBackoffMs = retryBackoffMs;
+        }
+
+        public long getRetryBackoffMaxMs() {
+            return retryBackoffMaxMs;
+        }
+
+        public void setRetryBackoffMaxMs(long retryBackoffMaxMs) {
+            this.retryBackoffMaxMs = retryBackoffMaxMs;
+        }
+    }
+
+    /**
+     * Elasticsearch 投影配置。
+     */
+    public static class Elasticsearch {
+
+        private String uris = "http://127.0.0.1:9200";
+        private String indexName = "wuji-kb-chunk";
+        private final Hybrid hybrid = new Hybrid();
+        private double minReliableScore = 0.35;
+
+        public String getUris() {
+            return uris;
+        }
+
+        public void setUris(String uris) {
+            this.uris = uris;
+        }
+
+        public String getIndexName() {
+            return indexName;
+        }
+
+        public void setIndexName(String indexName) {
+            this.indexName = indexName;
+        }
+
+        public Hybrid getHybrid() {
+            return hybrid;
+        }
+
+        public double getMinReliableScore() {
+            return minReliableScore;
+        }
+
+        public void setMinReliableScore(double minReliableScore) {
+            this.minReliableScore = minReliableScore;
+        }
+    }
+
+    /**
+     * Hybrid Search 参数。
+     */
+    public static class Hybrid {
+
+        private boolean enabled = true;
+        private int bm25Size = 20;
+        private int knnSize = 20;
+        private int rrfRankConstant = 60;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public int getBm25Size() {
+            return bm25Size;
+        }
+
+        public void setBm25Size(int bm25Size) {
+            this.bm25Size = bm25Size;
+        }
+
+        public int getKnnSize() {
+            return knnSize;
+        }
+
+        public void setKnnSize(int knnSize) {
+            this.knnSize = knnSize;
+        }
+
+        public int getRrfRankConstant() {
+            return rrfRankConstant;
+        }
+
+        public void setRrfRankConstant(int rrfRankConstant) {
+            this.rrfRankConstant = rrfRankConstant;
+        }
     }
 
     /**

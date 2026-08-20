@@ -38,6 +38,8 @@ spring:
         # 工具发现由 McpToolRegistry 延迟执行，失败则空工具 + 定时重试
         initialized: false
         # SSE URL / Bearer 由 McpClientTransportConfiguration（wuji.mcp.* / DB）装配，避免重复建连
+  elasticsearch:
+    uris: ${wuji.rag.elasticsearch.uris}
 
 management:
   endpoints:
@@ -91,6 +93,7 @@ wuji:
       resume-buffer-events: 200
       resume-ttl: 10m
   rag:
+    vector-backend: elasticsearch
     as-tool: true
     top-k: 5
     similarity-threshold: 0.72
@@ -99,6 +102,12 @@ wuji:
     answer-mode: grounded
     embedding-enabled: true
     embedding-config-id: llm_embedding
+    # 批量入库/重建限速（单 chunk 刷新不限速）；遇 429 指数退避重试
+    embedding:
+      request-interval-ms: 1000
+      max-retries-on-429: 8
+      retry-backoff-ms: 2000
+      retry-backoff-max-ms: 60000
     tool-description-prompt-code: rag.knowledge_retrieval.system
     answer-prompt-code: rag.answer.system
     prefetch-enabled: false
@@ -117,6 +126,18 @@ wuji:
       trim-outside-chapters: false
       trailing-noise-markers:
         - 复制上面这段
+    elasticsearch:
+      uris: http://localhost:9200
+      index-name: wuji-kb-chunk
+      # dims 与 llm_config EMBEDDING 不一致时自动删建索引（须随后对 ACTIVE 版本重建向量）
+      recreate-index-on-dimension-mismatch: true
+      hybrid:
+        # Basic 许可证可用：双路 BM25+kNN 后客户端 RRF（不调用集群 retriever.rrf）
+        enabled: true
+        bm25-size: 20
+        knn-size: 20
+        rrf-rank-constant: 60
+      min-reliable-score: 0.35
   mcp:
     enabled: true
     server-url: http://127.0.0.1:8081

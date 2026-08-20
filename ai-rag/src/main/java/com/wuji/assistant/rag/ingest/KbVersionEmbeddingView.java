@@ -9,13 +9,17 @@ import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
  * @param versionId              文档版本
  * @param embeddingConfigId      llm_config.config_id
  * @param embeddingModelVersion  模型指纹
- * @param embeddedChunkCount     embedding 非空的 ACTIVE chunk 数
+ * @param embeddedChunkCount     已嵌入 ACTIVE chunk 数
+ * @param vectorBackend          pgvector | elasticsearch
+ * @param indexName              ES index 名；PG 为 null
  * @author liudy
  */
 public record KbVersionEmbeddingView(
         @JsonSerialize(using = ToStringSerializer.class) Long versionId,
         String embeddingConfigId,
         String embeddingModelVersion,
-        int embeddedChunkCount
+        int embeddedChunkCount,
+        String vectorBackend,
+        String indexName
 ) {
 }

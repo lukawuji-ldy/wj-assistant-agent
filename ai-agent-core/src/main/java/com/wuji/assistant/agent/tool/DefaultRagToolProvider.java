@@ -39,7 +39,7 @@ public class DefaultRagToolProvider implements RagToolProvider {
                 KnowledgeRetrievalToolFactory.DEFAULT_DESCRIPTION);
         return List.of(toolFactory.create(
                 ragProperties.getTopK(),
-                ragProperties.getMinReliableScore(),
+                ragProperties.getEffectiveMinReliableScore(),
                 description));
     }
 }

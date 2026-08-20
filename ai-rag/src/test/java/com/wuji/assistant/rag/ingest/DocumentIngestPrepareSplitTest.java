@@ -23,7 +23,7 @@ class DocumentIngestPrepareSplitTest {
     void setUp() {
         // prepareSplit / previewSplit 不访问 JDBC / Embedding
         ingestService = new DocumentIngestService(
-                null, new ObjectMapper(), preprocessor, splitter, null);
+                null, new ObjectMapper(), preprocessor, splitter, null, null);
     }
 
     private SplitPreviewResult previewWithType(String text, String contentType) {

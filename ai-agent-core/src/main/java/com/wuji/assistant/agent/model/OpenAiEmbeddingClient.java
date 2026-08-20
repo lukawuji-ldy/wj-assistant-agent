@@ -73,7 +73,15 @@ public class OpenAiEmbeddingClient implements EmbeddingClient {
         if (response == null || response.getResult() == null || response.getResult().getOutput() == null) {
             return null;
         }
-        return response.getResult().getOutput();
+        float[] vector = response.getResult().getOutput();
+        int expected = dimensions();
+        if (vector.length != expected) {
+            throw new WujiException(ErrorCode.RAG_UNAVAILABLE, """
+                    Embedding 模型返回维度 %d，与 llm_config.extra_json.dimensions=%d 不一致（configId=%s）。
+                    请将 EMBEDDING 行的 dimensions 改为与模型实际输出一致，然后重建 ES 索引并对 ACTIVE 版本重建向量。
+                    """.formatted(vector.length, expected, embeddingConfigId()).trim());
+        }
+        return vector;
     }
 
     @Override
@@ -93,6 +101,18 @@ public class OpenAiEmbeddingClient implements EmbeddingClient {
             return configId + "|" + model + "|" + dimPart;
         } catch (Exception e) {
             return configId + "|unknown|1536";
+        }
+    }
+
+    @Override
+    public int dimensions() {
+        String configId = embeddingConfigId();
+        try {
+            LlmConfigRecord cfg = llmConfigRepository.requireActive(configId, LlmConfigRecord.KIND_EMBEDDING);
+            Integer dims = LlmExtraJson.integer(cfg.getExtraJson(), "dimensions");
+            return dims == null ? 1536 : dims;
+        } catch (Exception e) {
+            return 1536;
         }
     }
 

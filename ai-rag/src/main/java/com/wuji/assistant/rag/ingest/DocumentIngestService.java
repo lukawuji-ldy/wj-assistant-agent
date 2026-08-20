@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wuji.assistant.common.exception.ErrorCode;
 import com.wuji.assistant.common.exception.WujiException;
 import com.wuji.assistant.common.util.IdGenerator;
+import com.wuji.assistant.rag.vector.VectorIndexPort;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -35,17 +36,20 @@ public class DocumentIngestService {
     private final DocumentPreprocessor preprocessor;
     private final ChineseRecursiveTextSplitter splitter;
     private final KbChunkEmbeddingService embeddingService;
+    private final VectorIndexPort vectorIndexPort;
 
     public DocumentIngestService(JdbcTemplate jdbcTemplate,
                                  ObjectMapper objectMapper,
                                  DocumentPreprocessor preprocessor,
                                  ChineseRecursiveTextSplitter splitter,
-                                 KbChunkEmbeddingService embeddingService) {
+                                 KbChunkEmbeddingService embeddingService,
+                                 VectorIndexPort vectorIndexPort) {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.preprocessor = preprocessor;
         this.splitter = splitter;
         this.embeddingService = embeddingService;
+        this.vectorIndexPort = vectorIndexPort;
     }
 
     /**
@@ -213,6 +217,7 @@ public class DocumentIngestService {
                 UPDATE kb_chunk SET status = 'DEPRECATED', update_time = ?
                 WHERE version_id = ? AND status = 'ACTIVE'
                 """, now, versionId);
+        vectorIndexPort.deprecateVersion(versionId);
         jdbcTemplate.update("""
                 UPDATE vector_store
                 SET metadata = jsonb_set(metadata::jsonb, '{status}', '"DEPRECATED"'::jsonb, true)
@@ -293,6 +298,7 @@ public class DocumentIngestService {
                     UPDATE kb_chunk SET status = 'DEPRECATED', update_time = ?
                     WHERE version_id = ? AND status = 'ACTIVE'
                     """, now, vid);
+            vectorIndexPort.deprecateVersion(vid);
         }
         jdbcTemplate.update("""
                 UPDATE vector_store
@@ -327,7 +333,7 @@ public class DocumentIngestService {
         return truncated.toString();
     }
 
-    static String toVectorLiteral(float[] vector) {
+    public static String toVectorLiteral(float[] vector) {
         StringBuilder sb = new StringBuilder("[");
         for (int i = 0; i < vector.length; i++) {
             if (i > 0) {

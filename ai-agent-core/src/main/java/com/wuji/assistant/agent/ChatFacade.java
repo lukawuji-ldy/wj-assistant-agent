@@ -604,7 +604,7 @@ public class ChatFacade {
             var result = knowledgeRetrievalService.retrieve(
                     userMessage,
                     ragProperties.getTopK(),
-                    ragProperties.getMinReliableScore());
+                    ragProperties.getEffectiveMinReliableScore());
             String block = RagContextBlock.format(result);
             if (!StringUtils.hasText(block)) {
                 return systemPrompt;

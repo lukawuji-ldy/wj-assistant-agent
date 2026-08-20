@@ -31,4 +31,23 @@ public interface EmbeddingClient {
     default String embeddingModelVersion() {
         return "unavailable|unknown|1536";
     }
+
+    /**
+     * 向量维度（来自 llm_config EMBEDDING extra_json.dimensions）。
+     */
+    default int dimensions() {
+        String fp = embeddingModelVersion();
+        if (fp == null || fp.isBlank()) {
+            return 1536;
+        }
+        int last = fp.lastIndexOf('|');
+        if (last < 0 || last >= fp.length() - 1) {
+            return 1536;
+        }
+        try {
+            return Integer.parseInt(fp.substring(last + 1));
+        } catch (NumberFormatException e) {
+            return 1536;
+        }
+    }
 }
