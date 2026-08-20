@@ -1,6 +1,8 @@
 target/
 tmp/
-docs/
+/docs/**
+!/docs/images/
+!/docs/images/**
 agents.md
 /*/target/
 !.mvn/wrapper/maven-wrapper.jar
@@ -41,7 +43,7 @@ build/
 
 ### Mac OS ###
 .DS_Store
-/docs/
+!/docs/images/**
 /skills-lock.json
 /.cursor/
 /.idea/

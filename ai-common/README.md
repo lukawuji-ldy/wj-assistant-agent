@@ -1,6 +1,6 @@
 # ai-common
 
-跨模块公共库（jar）：统一错误码、异常、公共 DTO 与约定类型，供 Agent / Memory / RAG / MCP Server 复用。
+跨模块公共库（jar）：统一错误码、异常、公共 DTO 与约定类型，供 Agent / Memory / RAG / MCP Server / VTA 复用。
 
 ## 主要功能
 
@@ -13,7 +13,7 @@
 | 项 | 选型 |
 |---|---|
 | 形态 | 独立 Maven jar（最底层公共依赖） |
-| 语言 / 基线 | JDK 17；版本与仓库锁定表对齐 |
-| 被依赖方 | `ai-agent-core`、`ai-memory`、`ai-rag`、`assistant-mcp-server` 等 |
+| 基线 | JDK 17；版本与仓库锁定表对齐 |
+| 被依赖方 | `ai-agent-core`、`ai-memory`、`ai-rag`、`ai-analysis-core`、`assistant-mcp-server` 等 |
 
 编码约定见 [docs/coding-standard.md](../docs/coding-standard.md)。
