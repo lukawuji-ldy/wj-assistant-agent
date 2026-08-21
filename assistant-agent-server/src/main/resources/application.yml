@@ -93,7 +93,7 @@ wuji:
       resume-buffer-events: 200
       resume-ttl: 10m
   rag:
-    vector-backend: elasticsearch
+    vector-backend: pgvector
     as-tool: true
     top-k: 5
     similarity-threshold: 0.72
