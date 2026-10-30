@@ -48,6 +48,7 @@ public class ElasticsearchIndexInitializer {
                       "doc_id": { "type": "keyword" },
                       "version_id": { "type": "keyword" },
                       "collection": { "type": "keyword" },
+                      "domain_name": { "type": "keyword" },
                       "status": { "type": "keyword" },
                       "version_status": { "type": "keyword" },
                       "revision": { "type": "keyword" },

@@ -1,6 +1,6 @@
 # ai-rag
 
-知识库（RAG）模块库（jar）：文档入库、中文切分、Chunk Revision、向量化与检索，并向 Agent 提供 `knowledge_retrieval` Tool。
+知识库（RAG）模块库（jar）：文档入库、中文切分、Chunk Revision、向量化与检索。聊天侧由领域子 Agent 调用检索。
 
 企业侧真正关心的是：**引用可追溯到哪份文档的哪个版本/片段**、停用旧政策后是否还会被命中、无可靠命中时是否拒答——而不只是「向量库能搜到一段话」。
 
@@ -26,8 +26,8 @@
 
 - **入库**：版本管理、中文预处理/切分、Chunk Revision；Embedding 经 `llm_config` 的 `EMBEDDING` 行；批量限速与 429 退避（`wuji.rag.embedding.*`）
 - **检索门面**：`KnowledgeRetrievalService`；无可靠命中可 `rejected=true`（grounded 拒答）
-- **Agent 工具**：`knowledge_retrieval`；工具说明 / 回答策略来自库表 Prompt（`rag.knowledge_retrieval.system` / `rag.answer.system`）
-- **预检索**：`prefetch-enabled` 时 ChatFacade 入模前召回，缓解部分模型跳过 Tool 直接拒答
+- **检索**：`KnowledgeRetrievalService` / `VectorIndexPort`；工具说明与回答策略来自库表 Prompt（`rag.knowledge_retrieval.system` / `rag.answer.system`），由主 Agent 的 `knowledge_search` 使用
+- **聊天路径**：`prepare` 不再预取。领域确定后由子 Agent 检索
 - **管理支撑**：CRUD / 重建等由旁路 Admin API 调用本库能力（本聊天仓无 `/api/admin/**`）
 
 ---

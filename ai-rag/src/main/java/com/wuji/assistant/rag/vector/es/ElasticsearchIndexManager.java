@@ -106,6 +106,7 @@ public class ElasticsearchIndexManager {
                 return;
             }
             if (currentDims.getAsInt() == expectedDims) {
+                ensureDomainField(indexName);
                 return;
             }
             if (properties.getElasticsearch().isRecreateIndexOnDimensionMismatch()) {
@@ -120,6 +121,16 @@ public class ElasticsearchIndexManager {
         } catch (IOException e) {
             throw new WujiException(ErrorCode.RAG_UNAVAILABLE,
                     "Elasticsearch index ensure failed: " + indexName, e);
+        }
+    }
+
+    private void ensureDomainField(String indexName) {
+        try {
+            client.indices().putMapping(m -> m
+                    .index(indexName)
+                    .properties("domain_name", Property.of(p -> p.keyword(k -> k))));
+        } catch (IOException e) {
+            log.warn("Elasticsearch domain_name mapping update failed index={}: {}", indexName, e.toString());
         }
     }
 

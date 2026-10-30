@@ -41,13 +41,20 @@ class RetrievalQueryTermsTest {
     }
 
     @Test
-    void mergeHitsPrefersHigherScoreAndKeepsKeywordOnly() {
-        RetrievalResult.Hit crm = new RetrievalResult.Hit("c1", "crm", 0.62, Map.of());
-        RetrievalResult.Hit xu = new RetrievalResult.Hit("c2", "徐凤年", 1.0, Map.of());
+    void mergeHitsKeepsKeywordOnlyAndDoesNotLetKeywordScoreCoverCosine() {
+        RetrievalResult.Hit cosine = new RetrievalResult.Hit("b", "重叠", 0.80, Map.of());
+        RetrievalResult.Hit strongerCosine = new RetrievalResult.Hit("a", "仅余弦", 0.91, Map.of());
+        RetrievalResult.Hit keywordOverlap = new RetrievalResult.Hit("b", "重叠关键词", 1.0, Map.of());
+        RetrievalResult.Hit keywordOnly = new RetrievalResult.Hit("c", "仅关键词", 1.0, Map.of());
         List<RetrievalResult.Hit> merged = KnowledgeRetrievalService.mergeHits(
-                List.of(crm), List.of(xu), 5);
-        assertEquals(2, merged.size());
-        assertEquals("c2", merged.get(0).chunkId());
-        assertEquals("c1", merged.get(1).chunkId());
+                List.of(strongerCosine, cosine),
+                List.of(keywordOverlap, keywordOnly),
+                5);
+        assertEquals("b", merged.get(0).chunkId());
+        assertEquals(0.80, merged.get(0).score(), 1e-6);
+        assertEquals("a", merged.get(1).chunkId());
+        assertEquals(0.91, merged.get(1).score(), 1e-6);
+        assertEquals("c", merged.get(2).chunkId());
+        assertEquals(0.5, merged.get(2).score(), 1e-6);
     }
 }

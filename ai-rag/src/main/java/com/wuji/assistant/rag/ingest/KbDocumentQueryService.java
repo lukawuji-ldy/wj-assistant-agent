@@ -51,7 +51,7 @@ public class KbDocumentQueryService {
         StringBuilder where = new StringBuilder(" WHERE 1=1 ");
         List<Object> args = new ArrayList<>();
         if (StringUtils.hasText(collection)) {
-            where.append(" AND d.collection = ? ");
+            where.append(" AND d.domain_name = ? ");
             args.add(collection.trim());
         }
         if (StringUtils.hasText(status)) {
@@ -74,7 +74,7 @@ public class KbDocumentQueryService {
         listArgs.add(s);
         listArgs.add(offset);
         List<Map<String, Object>> items = jdbcTemplate.queryForList("""
-                SELECT d.doc_id, d.collection, d.title, d.current_version_id, d.create_time, d.update_time,
+                SELECT d.doc_id, d.collection, d.domain_name, d.title, d.current_version_id, d.create_time, d.update_time,
                        v.version AS current_version, v.status AS current_status
                 FROM kb_document d
                 LEFT JOIN kb_document_version v ON v.id = d.current_version_id
@@ -100,7 +100,7 @@ public class KbDocumentQueryService {
 
     public Map<String, Object> getDocument(String docId) {
         List<Map<String, Object>> docs = jdbcTemplate.queryForList("""
-                SELECT doc_id, collection, title, current_version_id, create_time, update_time
+                SELECT doc_id, collection, domain_name, title, current_version_id, create_time, update_time
                 FROM kb_document WHERE doc_id = ?
                 """, docId);
         if (docs.isEmpty()) {

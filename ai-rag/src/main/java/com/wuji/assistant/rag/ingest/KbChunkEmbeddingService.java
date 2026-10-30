@@ -65,7 +65,7 @@ public class KbChunkEmbeddingService {
     public int embedVersion(long versionId) {
         ensureVersionExists(versionId);
         List<Map<String, Object>> chunks = jdbcTemplate.queryForList("""
-                SELECT c.chunk_id::text AS chunk_id, c.doc_id, c.version_id, c.collection,
+                SELECT c.chunk_id::text AS chunk_id, c.doc_id, c.version_id, c.collection, c.domain_name,
                        c.section, c.summary, c.status, v.status AS version_status,
                        c.current_revision, r.content, r.content_hash
                 FROM kb_chunk c
@@ -238,7 +238,7 @@ public class KbChunkEmbeddingService {
                 chunkId,
                 String.valueOf(row.get("doc_id")),
                 ((Number) row.get("version_id")).longValue(),
-                row.get("collection") == null ? "" : String.valueOf(row.get("collection")),
+                row.get("domain_name") == null ? "" : String.valueOf(row.get("domain_name")),
                 row.get("status") == null ? "ACTIVE" : String.valueOf(row.get("status")),
                 row.get("version_status") == null ? "ACTIVE" : String.valueOf(row.get("version_status")),
                 revision,
@@ -252,7 +252,7 @@ public class KbChunkEmbeddingService {
 
     private Map<String, Object> loadChunkRow(UUID chunkId) {
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
-                SELECT c.chunk_id, c.doc_id, c.version_id, c.collection, c.section, c.summary,
+                SELECT c.chunk_id, c.doc_id, c.version_id, c.collection, c.domain_name, c.section, c.summary,
                        c.status, v.status AS version_status
                 FROM kb_chunk c
                 JOIN kb_document_version v ON v.id = c.version_id

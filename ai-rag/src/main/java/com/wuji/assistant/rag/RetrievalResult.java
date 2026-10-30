@@ -21,7 +21,7 @@ public record RetrievalResult(
      *
      * @param chunkId  切片 id
      * @param content  正文
-     * @param score    得分（关键词命中为 1.0）
+     * @param score    得分。余弦路保留相似度；仅关键词命中时为排名分，不再整路写 1.0
      * @param metadata 元数据
      * @author liudy
      */

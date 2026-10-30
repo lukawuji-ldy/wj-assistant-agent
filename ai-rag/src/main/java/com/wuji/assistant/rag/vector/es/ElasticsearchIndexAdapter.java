@@ -7,6 +7,7 @@ import co.elastic.clients.elasticsearch.core.SearchRequest;
 import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.UpdateByQueryRequest;
 import co.elastic.clients.elasticsearch.core.UpdateRequest;
+import co.elastic.clients.json.JsonData;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -14,6 +15,9 @@ import com.wuji.assistant.common.exception.ErrorCode;
 import com.wuji.assistant.common.exception.WujiException;
 import com.wuji.assistant.rag.RetrievalResult;
 import com.wuji.assistant.rag.config.RagVectorProperties;
+import com.wuji.assistant.rag.diagnose.DiagnoseSupport;
+import com.wuji.assistant.rag.diagnose.RetrievalTestOptions;
+import com.wuji.assistant.rag.diagnose.RetrievalTrace;
 import com.wuji.assistant.rag.ingest.EmbeddingClient;
 import com.wuji.assistant.rag.vector.ClientRrfFusion;
 import com.wuji.assistant.rag.vector.VectorChunkDocument;
@@ -49,6 +53,8 @@ import java.util.UUID;
 public class ElasticsearchIndexAdapter implements VectorIndexPort {
 
     private static final Logger log = LoggerFactory.getLogger(ElasticsearchIndexAdapter.class);
+
+    private static final String HYBRID_STATUS_DISABLED = "hybrid 已禁用，仅 BM25 检索";
 
     private final ElasticsearchClient client;
     private final JdbcTemplate jdbcTemplate;
@@ -120,11 +126,39 @@ public class ElasticsearchIndexAdapter implements VectorIndexPort {
     }
 
     @Override
+    public void assignDomain(String docId, String domainName) {
+        if (!StringUtils.hasText(docId) || !StringUtils.hasText(domainName)) {
+            return;
+        }
+        String domain = domainName.trim();
+        try {
+            client.updateByQuery(UpdateByQueryRequest.of(u -> u
+                    .index(indexName())
+                    .query(q -> q.term(t -> t.field("doc_id").value(docId.trim())))
+                    .script(s -> s
+                            .lang("painless")
+                            .source("""
+                                    ctx._source.domain_name = params.domain;
+                                    ctx._source.collection = params.domain;
+                                    """)
+                            .params("domain", JsonData.of(domain)))));
+        } catch (IOException e) {
+            log.warn("assignDomain ES failed docId={}: {}", docId, e.toString());
+        }
+    }
+
+    @Override
     public RetrievalResult search(String query, int topK, double minReliableScore) {
+        return search(query, topK, minReliableScore, null);
+    }
+
+    @Override
+    public RetrievalResult search(String query, int topK, double minReliableScore, String collection) {
         if (!StringUtils.hasText(query)) {
             return new RetrievalResult(List.of(), true, "查询为空");
         }
         int limit = Math.max(1, topK);
+        String scope = StringUtils.hasText(collection) ? collection.trim() : null;
         RagVectorProperties.Hybrid hybrid = properties.getElasticsearch().getHybrid();
         float[] queryVector = embeddingClient.available() ? embeddingClient.embed(query.trim()) : null;
         boolean hybridEnabled = hybrid.isEnabled() && queryVector != null;
@@ -133,9 +167,9 @@ public class ElasticsearchIndexAdapter implements VectorIndexPort {
             List<ScoredChunkId> candidates;
             if (hybridEnabled) {
                 assertQueryVectorMatchesIndex(queryVector);
-                candidates = searchHybridClientRrf(query.trim(), queryVector, hybrid, limit);
+                candidates = searchHybridClientRrf(query.trim(), queryVector, hybrid, limit, scope);
             } else {
-                SearchResponse<Map> response = client.search(buildBm25Search(limit, query.trim()), Map.class);
+                SearchResponse<Map> response = client.search(buildBm25Search(limit, query.trim(), scope), Map.class);
                 candidates = extractBm25OnlyCandidates(response);
             }
             List<RetrievalResult.Hit> hits = hydrateHits(candidates, minReliableScore);
@@ -154,6 +188,153 @@ public class ElasticsearchIndexAdapter implements VectorIndexPort {
             }
             throw e;
         }
+    }
+
+    @Override
+    public RetrievalTrace diagnose(String query, String domain, RetrievalTestOptions options) {
+        long start = System.currentTimeMillis();
+        RetrievalTestOptions effective = (options == null ? RetrievalTestOptions.defaults() : options).validate();
+        String q = query == null ? "" : query.trim();
+        String scope = StringUtils.hasText(domain) ? domain.trim() : null;
+        RagVectorProperties.Hybrid hybrid = properties.getElasticsearch().getHybrid();
+        int vectorTopK = effective.vectorTopKOrDefault(Math.max(1, hybrid.getKnnSize()));
+        int keywordTopK = effective.keywordTopKOrDefault(Math.max(1, hybrid.getBm25Size()));
+        int finalTopK = Math.max(1, effective.finalTopKOrDefault(RetrievalTestOptions.DEFAULT_FINAL_TOPK));
+        int rankConstant = effective.rrfRankConstantOrDefault(hybrid.getRrfRankConstant());
+        double minReliable = effective.minReliableScoreOrDefault(properties.getElasticsearch().getMinReliableScore());
+
+        boolean available = embeddingClient.available();
+        List<String> warnings = new ArrayList<>();
+        long embedStart = System.currentTimeMillis();
+        float[] vector = available && StringUtils.hasText(q) ? embeddingClient.embed(q) : null;
+        long embedMs = System.currentTimeMillis() - embedStart;
+
+        boolean hybridEnabled = hybrid.isEnabled() && vector != null;
+        List<RetrievalTrace.RetrievalHit> vectorHits = List.of();
+        List<RetrievalTrace.RetrievalHit> keywordHits = List.of();
+        List<RetrievalResult.Hit> hydrated;
+        Map<String, Integer> vectorRank = new LinkedHashMap<>();
+        Map<String, Integer> keywordRank = new LinkedHashMap<>();
+        Map<String, double[]> contributions = new LinkedHashMap<>();
+
+        try {
+            if (hybridEnabled) {
+                assertQueryVectorMatchesIndex(vector);
+                int bm25Size = Math.max(finalTopK, Math.max(keywordTopK, hybrid.getBm25Size()));
+                int knnSize = Math.max(finalTopK, Math.max(vectorTopK, hybrid.getKnnSize()));
+                SearchResponse<Map> bm25Response = client.search(buildBm25Search(bm25Size, q, scope), Map.class);
+                SearchResponse<Map> knnResponse = client.search(buildKnnSearch(knnSize, vector, hybrid, scope), Map.class);
+                List<ScoredDoc> bm25 = toScoredDocs(bm25Response);
+                List<ScoredDoc> knn = toScoredDocs(knnResponse);
+                keywordHits = toTraceHits(bm25, warnings);
+                vectorHits = toTraceHits(knn, warnings);
+                List<ClientRrfFusion.RankedDoc> bm25Ranked = toRankedDocs(bm25);
+                List<ClientRrfFusion.RankedDoc> knnRanked = toRankedDocs(knn);
+                // lane0 = BM25(普通路)，lane1 = kNN(向量路)
+                List<ClientRrfFusion.DetailedFusedDoc> detail =
+                        ClientRrfFusion.fuseDetailed(List.of(bm25Ranked, knnRanked), rankConstant, finalTopK);
+                for (ClientRrfFusion.DetailedFusedDoc doc : detail) {
+                    keywordRank.put(doc.id(), doc.ranks().get(0));
+                    vectorRank.put(doc.id(), doc.ranks().get(1));
+                    contributions.put(doc.id(), new double[]{doc.contributions().get(1), doc.contributions().get(0)});
+                }
+                List<ClientRrfFusion.FusedDoc> fused =
+                        ClientRrfFusion.fuse(List.of(bm25Ranked, knnRanked), rankConstant, finalTopK);
+                hydrated = hydrateFused(fused, -1d, warnings);
+            } else {
+                warnings.add(hybridDegradeReason(hybrid.isEnabled(), available));
+                int bm25Size = Math.max(finalTopK, Math.max(keywordTopK, hybrid.getBm25Size()));
+                SearchResponse<Map> bm25Response = client.search(buildBm25Search(bm25Size, q, scope), Map.class);
+                List<ScoredDoc> bm25 = toScoredDocs(bm25Response);
+                keywordHits = toTraceHits(bm25, warnings);
+                List<ClientRrfFusion.RankedDoc> bm25Ranked = toRankedDocs(bm25);
+                List<ClientRrfFusion.FusedDoc> fused =
+                        ClientRrfFusion.fuse(List.of(bm25Ranked), rankConstant, finalTopK);
+                List<ClientRrfFusion.DetailedFusedDoc> detail =
+                        ClientRrfFusion.fuseDetailed(List.of(bm25Ranked), rankConstant, finalTopK);
+                for (ClientRrfFusion.DetailedFusedDoc doc : detail) {
+                    keywordRank.put(doc.id(), doc.ranks().get(0));
+                    contributions.put(doc.id(), new double[]{0d, doc.contributions().get(0)});
+                }
+                hydrated = hydrateFused(fused, 1.0d, warnings);
+            }
+        } catch (IOException e) {
+            throw ragUnavailable("hybrid diagnose failed: " + rootCauseDetail(e), e);
+        } catch (RuntimeException e) {
+            if (e instanceof WujiException) {
+                throw e;
+            }
+            if (isEsClientFailure(e)) {
+                throw ragUnavailable("hybrid diagnose failed: " + rootCauseDetail(e), e);
+            }
+            throw e;
+        }
+
+        RetrievalTrace.EmbeddingInfo embedding = new RetrievalTrace.EmbeddingInfo(
+                available,
+                embeddingClient.embeddingConfigId(),
+                embeddingClient.embeddingModelVersion(),
+                embeddingClient.dimensions(),
+                embedMs);
+        return new RetrievalTrace(
+                "elasticsearch",
+                scope,
+                q,
+                new RetrievalTestOptions(vectorTopK, keywordTopK, finalTopK, minReliable, rankConstant),
+                embedding,
+                vectorHits,
+                keywordHits,
+                DiagnoseSupport.fuseHits(hydrated, vectorRank, keywordRank, contributions, minReliable),
+                List.copyOf(warnings),
+                System.currentTimeMillis() - start);
+    }
+
+    private static String hybridDegradeReason(boolean hybridFeatureEnabled, boolean embeddingAvailable) {
+        if (!hybridFeatureEnabled) {
+            return HYBRID_STATUS_DISABLED;
+        }
+        return embeddingAvailable ? "embedding 返回空向量，已降级为 BM25 检索" : "embedding 不可用，已降级为 BM25 检索";
+    }
+
+    private List<RetrievalTrace.RetrievalHit> toTraceHits(List<ScoredDoc> docs, List<String> warnings) {
+        List<RetrievalTrace.RetrievalHit> out = new ArrayList<>();
+        int rank = 1;
+        for (ScoredDoc doc : docs) {
+            Map<String, Object> row = loadRow(doc.chunkId());
+            if (row == null) {
+                warnings.add("ES 命中在 PG 不存在，已丢弃 chunkId=" + doc.chunkId());
+                continue;
+            }
+            String pgHash = String.valueOf(row.get("content_hash"));
+            if (StringUtils.hasText(doc.contentHash()) && !doc.contentHash().equals(pgHash)) {
+                warnings.add("contentHash 漂移，已丢弃 chunkId=" + doc.chunkId());
+                continue;
+            }
+            RetrievalResult.Hit hit = buildHit(doc.chunkId(), doc.score(), row);
+            out.add(DiagnoseSupport.toHit(rank++, hit, doc.score()));
+        }
+        return List.copyOf(out);
+    }
+
+    private List<RetrievalResult.Hit> hydrateFused(List<ClientRrfFusion.FusedDoc> fused,
+                                                   double fixedScore,
+                                                   List<String> warnings) {
+        List<RetrievalResult.Hit> out = new ArrayList<>();
+        for (ClientRrfFusion.FusedDoc doc : fused) {
+            double score = fixedScore >= 0 ? fixedScore : doc.normalizedScore();
+            Map<String, Object> row = loadRow(doc.id());
+            if (row == null) {
+                warnings.add("ES 融合命中在 PG 不存在，已丢弃 chunkId=" + doc.id());
+                continue;
+            }
+            String pgHash = String.valueOf(row.get("content_hash"));
+            if (StringUtils.hasText(doc.contentHash()) && !doc.contentHash().equals(pgHash)) {
+                warnings.add("contentHash 漂移，已丢弃 chunkId=" + doc.id());
+                continue;
+            }
+            out.add(buildHit(doc.id(), score, row));
+        }
+        return List.copyOf(out);
     }
 
     /**
@@ -179,13 +360,14 @@ public class ElasticsearchIndexAdapter implements VectorIndexPort {
      * 双路独立查询 + 客户端 RRF，对齐 ES 原生公式，不依赖 RRF 许可证。
      */
     private List<ScoredChunkId> searchHybridClientRrf(String query, float[] queryVector,
-                                                      RagVectorProperties.Hybrid hybrid, int limit)
+                                                      RagVectorProperties.Hybrid hybrid, int limit,
+                                                      String collection)
             throws IOException {
         int bm25Size = Math.max(limit, hybrid.getBm25Size());
         int knnSize = Math.max(limit, hybrid.getKnnSize());
-        SearchResponse<Map> bm25Response = client.search(buildBm25Search(bm25Size, query), Map.class);
+        SearchResponse<Map> bm25Response = client.search(buildBm25Search(bm25Size, query, collection), Map.class);
         SearchResponse<Map> knnResponse = client.search(
-                buildKnnSearch(knnSize, queryVector, hybrid), Map.class);
+                buildKnnSearch(knnSize, queryVector, hybrid, collection), Map.class);
         List<ClientRrfFusion.RankedDoc> bm25 = toRankedDocs(bm25Response);
         List<ClientRrfFusion.RankedDoc> knn = toRankedDocs(knnResponse);
         List<ClientRrfFusion.FusedDoc> fused = ClientRrfFusion.fuse(
@@ -223,7 +405,7 @@ public class ElasticsearchIndexAdapter implements VectorIndexPort {
         return properties.getElasticsearch().getIndexName();
     }
 
-    private SearchRequest buildBm25Search(int limit, String query) throws JsonProcessingException {
+    private SearchRequest buildBm25Search(int limit, String query, String collection) throws JsonProcessingException {
         String json = """
                 {
                   "size": %d,
@@ -232,17 +414,18 @@ public class ElasticsearchIndexAdapter implements VectorIndexPort {
                       "must": [{ "match": { "content": %s } }],
                       "filter": [
                         { "term": { "status": "ACTIVE" } },
-                        { "term": { "version_status": "ACTIVE" } }
+                        { "term": { "version_status": "ACTIVE" } }%s
                       ]
                     }
                   }
                 }
-                """.formatted(limit, objectMapper.writeValueAsString(query));
+                """.formatted(limit, objectMapper.writeValueAsString(query), collectionFilterJson(collection));
         return SearchRequest.of(s -> s.index(indexName()).withJson(new StringReader(json)));
     }
 
     private SearchRequest buildKnnSearch(int knnSize, float[] queryVector,
-                                         RagVectorProperties.Hybrid hybrid) throws JsonProcessingException {
+                                         RagVectorProperties.Hybrid hybrid,
+                                         String collection) throws JsonProcessingException {
         int k = Math.max(1, knnSize);
         int numCandidates = Math.max(hybrid.getKnnSize() * 5, Math.max(k * 5, 100));
         String json = """
@@ -255,12 +438,19 @@ public class ElasticsearchIndexAdapter implements VectorIndexPort {
                     "num_candidates": %d,
                     "filter": [
                       { "term": { "status": "ACTIVE" } },
-                      { "term": { "version_status": "ACTIVE" } }
+                      { "term": { "version_status": "ACTIVE" } }%s
                     ]
                   }
                 }
-                """.formatted(k, vectorJson(queryVector), k, numCandidates);
+                """.formatted(k, vectorJson(queryVector), k, numCandidates, collectionFilterJson(collection));
         return SearchRequest.of(s -> s.index(indexName()).withJson(new StringReader(json)));
+    }
+
+    private String collectionFilterJson(String domain) throws JsonProcessingException {
+        if (!StringUtils.hasText(domain)) {
+            return "";
+        }
+        return ", { \"term\": { \"domain_name\": " + objectMapper.writeValueAsString(domain.trim()) + " } }";
     }
 
     private List<ClientRrfFusion.RankedDoc> toRankedDocs(SearchResponse<Map> response) {
@@ -274,6 +464,30 @@ public class ElasticsearchIndexAdapter implements VectorIndexPort {
                 continue;
             }
             out.add(new ClientRrfFusion.RankedDoc(chunkId, resolveContentHash(hit)));
+        }
+        return out;
+    }
+
+    private List<ScoredDoc> toScoredDocs(SearchResponse<Map> response) {
+        List<ScoredDoc> out = new ArrayList<>();
+        if (response.hits() == null || response.hits().hits() == null) {
+            return out;
+        }
+        for (Hit<Map> hit : response.hits().hits()) {
+            String chunkId = resolveChunkId(hit);
+            if (!StringUtils.hasText(chunkId)) {
+                continue;
+            }
+            double score = hit.score() == null ? 0d : hit.score();
+            out.add(new ScoredDoc(chunkId, score, resolveContentHash(hit)));
+        }
+        return out;
+    }
+
+    private static List<ClientRrfFusion.RankedDoc> toRankedDocs(List<ScoredDoc> docs) {
+        List<ClientRrfFusion.RankedDoc> out = new ArrayList<>(docs.size());
+        for (ScoredDoc doc : docs) {
+            out.add(new ClientRrfFusion.RankedDoc(doc.chunkId(), doc.contentHash()));
         }
         return out;
     }
@@ -329,6 +543,20 @@ public class ElasticsearchIndexAdapter implements VectorIndexPort {
     }
 
     private RetrievalResult.Hit hydrateOne(ScoredChunkId candidate) {
+        Map<String, Object> row = loadRow(candidate.chunkId());
+        if (row == null) {
+            return null;
+        }
+        String pgHash = String.valueOf(row.get("content_hash"));
+        if (StringUtils.hasText(candidate.esContentHash()) && !candidate.esContentHash().equals(pgHash)) {
+            log.debug("discard drift hit chunkId={} esHash={} pgHash={}",
+                    candidate.chunkId(), candidate.esContentHash(), pgHash);
+            return null;
+        }
+        return buildHit(candidate.chunkId(), candidate.score(), row);
+    }
+
+    private Map<String, Object> loadRow(String chunkId) {
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
                 SELECT c.chunk_id::text AS chunk_id,
                        r.content AS content,
@@ -342,17 +570,11 @@ public class ElasticsearchIndexAdapter implements VectorIndexPort {
                 JOIN kb_chunk_revision r
                   ON r.chunk_id = c.chunk_id AND r.revision = c.current_revision AND r.status = 'ACTIVE'
                 WHERE c.status = 'ACTIVE' AND c.chunk_id = ?::uuid
-                """, candidate.chunkId());
-        if (rows.isEmpty()) {
-            return null;
-        }
-        Map<String, Object> row = rows.get(0);
-        String pgHash = String.valueOf(row.get("content_hash"));
-        if (StringUtils.hasText(candidate.esContentHash()) && !candidate.esContentHash().equals(pgHash)) {
-            log.debug("discard drift hit chunkId={} esHash={} pgHash={}",
-                    candidate.chunkId(), candidate.esContentHash(), pgHash);
-            return null;
-        }
+                """, chunkId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    private static RetrievalResult.Hit buildHit(String chunkId, double score, Map<String, Object> row) {
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("doc_id", row.get("doc_id"));
         meta.put("collection", row.get("collection"));
@@ -362,7 +584,7 @@ public class ElasticsearchIndexAdapter implements VectorIndexPort {
         meta.put("version_id", row.get("version_id"));
         meta.put("version", row.get("version"));
         meta.put("revision", row.get("revision"));
-        meta.put("content_hash", pgHash);
+        meta.put("content_hash", row.get("content_hash"));
         meta.put("status", "ACTIVE");
         Object configId = row.get("embedding_config_id");
         if (configId != null && StringUtils.hasText(String.valueOf(configId))) {
@@ -373,7 +595,7 @@ public class ElasticsearchIndexAdapter implements VectorIndexPort {
             meta.put("embedding_model_version", String.valueOf(modelVersion));
         }
         String content = row.get("content") == null ? "" : String.valueOf(row.get("content"));
-        return new RetrievalResult.Hit(candidate.chunkId(), content, candidate.score(), meta);
+        return new RetrievalResult.Hit(chunkId, content, score, meta);
     }
 
     private static Map<String, Object> toSource(VectorChunkDocument document) {
@@ -383,6 +605,7 @@ public class ElasticsearchIndexAdapter implements VectorIndexPort {
         source.put("doc_id", document.docId());
         source.put("version_id", String.valueOf(document.versionId()));
         source.put("collection", document.collection());
+        source.put("domain_name", document.collection());
         source.put("status", document.status());
         source.put("version_status", document.versionStatus());
         source.put("revision", String.valueOf(document.revision()));
@@ -448,5 +671,9 @@ public class ElasticsearchIndexAdapter implements VectorIndexPort {
     }
 
     private record ScoredChunkId(String chunkId, double score, String esContentHash) {
+    }
+
+    /** ES 单路命中：kNN/BM25 {@code _score} 与 contentHash。 */
+    private record ScoredDoc(String chunkId, double score, String contentHash) {
     }
 }

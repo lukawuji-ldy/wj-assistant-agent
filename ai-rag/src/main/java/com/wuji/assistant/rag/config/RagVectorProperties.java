@@ -15,6 +15,7 @@ public class RagVectorProperties {
 
     private final Embedding embedding = new Embedding();
     private final Elasticsearch elasticsearch = new Elasticsearch();
+    private final PgVector pgvector = new PgVector();
 
     public String getVectorBackend() {
         return vectorBackend;
@@ -30,6 +31,10 @@ public class RagVectorProperties {
 
     public Elasticsearch getElasticsearch() {
         return elasticsearch;
+    }
+
+    public PgVector getPgvector() {
+        return pgvector;
     }
 
     public boolean isElasticsearchBackend() {
@@ -80,6 +85,22 @@ public class RagVectorProperties {
 
         public void setRetryBackoffMaxMs(long retryBackoffMaxMs) {
             this.retryBackoffMaxMs = retryBackoffMaxMs;
+        }
+    }
+
+    /**
+     * PG 双路 RRF 参数。
+     */
+    public static class PgVector {
+
+        private int rrfRankConstant = 60;
+
+        public int getRrfRankConstant() {
+            return rrfRankConstant;
+        }
+
+        public void setRrfRankConstant(int rrfRankConstant) {
+            this.rrfRankConstant = rrfRankConstant;
         }
     }
 

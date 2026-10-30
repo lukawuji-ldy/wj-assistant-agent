@@ -62,7 +62,10 @@ public class DocumentIngestService {
         }
 
         String title = StringUtils.hasText(request.title()) ? request.title().trim() : "未命名文档";
-        String collection = StringUtils.hasText(request.collection()) ? request.collection().trim() : "kb_default";
+        String domain = StringUtils.hasText(request.collection()) ? request.collection().trim() : "";
+        if (!StringUtils.hasText(domain)) {
+            throw new WujiException(ErrorCode.BAD_REQUEST, "必须选择领域");
+        }
         String docId = StringUtils.hasText(request.docId()) ? request.docId().trim() : IdGenerator.nextBizId("doc_");
 
         List<String> aclRoles = normalizeAcl(request.aclRoles());
@@ -70,7 +73,7 @@ public class DocumentIngestService {
         String ingestOptionsJson = toJson(buildIngestOptions(prepared, request));
 
         Timestamp now = Timestamp.from(Instant.now());
-        ensureDocument(docId, collection, title, now);
+        ensureDocument(docId, domain, title, now);
         String version = nextVersion(docId);
         long versionId = IdGenerator.nextLong();
         deprecateActiveVersions(docId, now);
@@ -99,11 +102,11 @@ public class DocumentIngestService {
             String summary = summaryOf(content);
             jdbcTemplate.update("""
                     INSERT INTO kb_chunk
-                    (chunk_id, version_id, doc_id, collection, chunk_seq, chunk_key,
+                    (chunk_id, version_id, doc_id, collection, domain_name, chunk_seq, chunk_key,
                      current_revision, section, summary, status, create_time, update_time)
-                    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'ACTIVE', ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'ACTIVE', ?, ?)
                     """,
-                    chunkId, versionId, docId, collection, i, chunkKey,
+                    chunkId, versionId, docId, domain, domain, i, chunkKey,
                     section, summary, now, now);
             jdbcTemplate.update("""
                     INSERT INTO kb_chunk_revision
@@ -120,6 +123,7 @@ public class DocumentIngestService {
             log.warn("ingest embedding failed docId={} versionId={}: {}", docId, versionId, e.toString());
         }
         boolean embedded = embeddedCount > 0;
+        vectorIndexPort.assignDomain(docId, domain);
 
         log.info("ingested docId={} version={} chunks={} embedded={} embeddedCount={}",
                 docId, version, prepared.chunks().size(), embedded, embeddedCount);
@@ -271,17 +275,27 @@ public class DocumentIngestService {
         }
     }
 
-    private void ensureDocument(String docId, String collection, String title, Timestamp now) {
+    private void ensureDocument(String docId, String domain, String title, Timestamp now) {
         Integer cnt = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM kb_document WHERE doc_id = ?", Integer.class, docId);
         if (cnt != null && cnt > 0) {
+            jdbcTemplate.update("""
+                    UPDATE kb_document
+                    SET domain_name = ?, collection = ?, update_time = ?
+                    WHERE doc_id = ?
+                    """, domain, domain, now, docId);
+            jdbcTemplate.update("""
+                    UPDATE kb_chunk
+                    SET domain_name = ?, collection = ?, update_time = ?
+                    WHERE doc_id = ?
+                    """, domain, domain, now, docId);
             return;
         }
         jdbcTemplate.update("""
                 INSERT INTO kb_document
-                (id, doc_id, collection, title, current_version_id, create_time, update_time)
-                VALUES (?, ?, ?, ?, NULL, ?, ?)
-                """, IdGenerator.nextLong(), docId, collection, title, now, now);
+                (id, doc_id, collection, domain_name, title, current_version_id, create_time, update_time)
+                VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+                """, IdGenerator.nextLong(), docId, domain, domain, title, now, now);
     }
 
     private void deprecateActiveVersions(String docId, Timestamp now) {

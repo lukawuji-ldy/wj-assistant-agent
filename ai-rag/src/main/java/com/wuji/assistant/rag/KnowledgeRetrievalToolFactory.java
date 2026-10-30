@@ -77,6 +77,30 @@ public class KnowledgeRetrievalToolFactory {
     }
 
     /**
+     * 由调用方生成 JSON（查询改写、多库路由的结果）。
+     *
+     * @param description 工具说明
+     * @param payload     入参 query，返回 JSON
+     * @return ToolCallback
+     */
+    public ToolCallback createJson(String description, Function<String, String> payload) {
+        String desc = StringUtils.hasText(description) ? description.trim() : DEFAULT_DESCRIPTION;
+        Function<Request, String> fn = req -> {
+            String q = req == null || req.query() == null ? "" : req.query();
+            try {
+                String body = payload.apply(q);
+                return StringUtils.hasText(body) ? body : "{\"rejected\":true,\"rejectReason\":\"empty\"}";
+            } catch (Exception e) {
+                return "{\"rejected\":true,\"rejectReason\":\"retrieve_failed\"}";
+            }
+        };
+        return FunctionToolCallback.builder("knowledge_retrieval", fn)
+                .description(desc)
+                .inputType(Request.class)
+                .build();
+    }
+
+    /**
      * Tool 入参。
      *
      * @param query 查询文本

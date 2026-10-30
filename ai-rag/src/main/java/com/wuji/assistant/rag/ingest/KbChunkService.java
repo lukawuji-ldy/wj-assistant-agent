@@ -81,6 +81,7 @@ public class KbChunkService {
         String versionLabel = String.valueOf(version.get("version"));
         String versionStatus = String.valueOf(version.get("status"));
         String collection = loadCollection(docId);
+        String domain = loadDomain(docId);
 
         int nextIndex = nextChunkSeq(versionId);
         Instant nowInstant = Instant.now().truncatedTo(ChronoUnit.MILLIS);
@@ -95,10 +96,10 @@ public class KbChunkService {
 
         jdbcTemplate.update("""
                 INSERT INTO kb_chunk
-                (chunk_id, version_id, doc_id, collection, chunk_seq, chunk_key,
+                (chunk_id, version_id, doc_id, collection, domain_name, chunk_seq, chunk_key,
                  current_revision, section, summary, status, create_time, update_time)
-                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
-                """, chunkId, versionId, docId, collection, nextIndex, chunkKey,
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+                """, chunkId, versionId, docId, collection, domain, nextIndex, chunkKey,
                 sec, summary, chunkStatus, now, now);
         jdbcTemplate.update("""
                 INSERT INTO kb_chunk_revision
@@ -302,6 +303,12 @@ public class KbChunkService {
         List<String> cols = jdbcTemplate.queryForList(
                 "SELECT collection FROM kb_document WHERE doc_id = ?", String.class, docId);
         return cols.isEmpty() || cols.get(0) == null ? "kb_default" : cols.get(0);
+    }
+
+    private String loadDomain(String docId) {
+        List<String> cols = jdbcTemplate.queryForList(
+                "SELECT domain_name FROM kb_document WHERE doc_id = ?", String.class, docId);
+        return cols.isEmpty() ? null : cols.get(0);
     }
 
     private Map<String, Object> loadChunk(UUID chunkId) {

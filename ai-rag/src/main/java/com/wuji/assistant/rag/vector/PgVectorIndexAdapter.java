@@ -2,6 +2,10 @@ package com.wuji.assistant.rag.vector;
 
 import com.wuji.assistant.rag.RetrievalQueryTerms;
 import com.wuji.assistant.rag.RetrievalResult;
+import com.wuji.assistant.rag.config.RagVectorProperties;
+import com.wuji.assistant.rag.diagnose.DiagnoseSupport;
+import com.wuji.assistant.rag.diagnose.RetrievalTestOptions;
+import com.wuji.assistant.rag.diagnose.RetrievalTrace;
 import com.wuji.assistant.rag.ingest.DocumentIngestService;
 import com.wuji.assistant.rag.ingest.EmbeddingClient;
 import org.slf4j.Logger;
@@ -15,7 +19,6 @@ import org.springframework.util.StringUtils;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -35,11 +38,14 @@ public class PgVectorIndexAdapter implements VectorIndexPort {
 
     private final JdbcTemplate jdbcTemplate;
     private final EmbeddingClient embeddingClient;
+    private final RagVectorProperties properties;
 
     public PgVectorIndexAdapter(JdbcTemplate jdbcTemplate,
-                                ObjectProvider<EmbeddingClient> embeddingClients) {
+                                ObjectProvider<EmbeddingClient> embeddingClients,
+                                RagVectorProperties properties) {
         this.jdbcTemplate = jdbcTemplate;
         this.embeddingClient = embeddingClients.getIfAvailable(() -> unavailableClient());
+        this.properties = properties;
     }
 
     @Override
@@ -88,25 +94,121 @@ public class PgVectorIndexAdapter implements VectorIndexPort {
 
     @Override
     public RetrievalResult search(String query, int topK, double minReliableScore) {
+        return search(query, topK, minReliableScore, null);
+    }
+
+    @Override
+    public RetrievalResult search(String query, int topK, double minReliableScore, String collection) {
         if (!StringUtils.hasText(query)) {
             return new RetrievalResult(List.of(), true, "查询为空");
         }
         int limit = Math.max(1, topK);
         String q = query.trim();
+        String scope = StringUtils.hasText(collection) ? collection.trim() : null;
         List<RetrievalResult.Hit> cosineHits = List.of();
         if (embeddingClient.available()) {
-            cosineHits = cosineSearch(q, limit);
+            cosineHits = cosineSearch(q, limit, scope);
         } else {
             log.debug("embedding unavailable, keyword-only retrieval");
         }
-        List<RetrievalResult.Hit> keywordHits = keywordSearch(q, limit);
-        List<RetrievalResult.Hit> reliable = mergeHits(cosineHits, keywordHits, limit).stream()
+        List<RetrievalResult.Hit> keywordHits = keywordSearch(q, limit, scope);
+        int rankConstant = properties == null || properties.getPgvector() == null
+                ? PgVectorScoreNormalizer.DEFAULT_RANK_CONSTANT
+                : properties.getPgvector().getRrfRankConstant();
+        List<RetrievalResult.Hit> reliable = mergeHits(cosineHits, keywordHits, limit, rankConstant).stream()
                 .filter(h -> h.score() >= minReliableScore)
                 .toList();
         if (reliable.isEmpty()) {
             return new RetrievalResult(List.of(), true, "无可靠知识命中");
         }
         return new RetrievalResult(reliable, false, null);
+    }
+
+    @Override
+    public RetrievalTrace diagnose(String query, String domain, RetrievalTestOptions options) {
+        long start = System.currentTimeMillis();
+        RetrievalTestOptions effective = (options == null ? RetrievalTestOptions.defaults() : options).validate();
+        String q = query == null ? "" : query.trim();
+        String scope = StringUtils.hasText(domain) ? domain.trim() : null;
+        int vectorTopK = effective.vectorTopKOrDefault(RetrievalTestOptions.DEFAULT_VECTOR_TOPK);
+        int keywordTopK = effective.keywordTopKOrDefault(RetrievalTestOptions.DEFAULT_KEYWORD_TOPK);
+        int finalTopK = Math.max(1, effective.finalTopKOrDefault(RetrievalTestOptions.DEFAULT_FINAL_TOPK));
+        int rankConstant = effective.rrfRankConstantOrDefault(defaultRankConstant());
+        double minReliable = effective.minReliableScoreOrDefault(RetrievalTestOptions.DEFAULT_MIN_RELIABLE_SCORE);
+
+        boolean available = embeddingClient.available();
+        long embedStart = System.currentTimeMillis();
+        float[] vector = available && StringUtils.hasText(q) ? embeddingClient.embed(q) : null;
+        long embedMs = System.currentTimeMillis() - embedStart;
+
+        List<String> warnings = new ArrayList<>();
+        List<RetrievalResult.Hit> cosineHits = List.of();
+        if (vector != null) {
+            cosineHits = cosineSearchByVector(q, DocumentIngestService.toVectorLiteral(vector), vectorTopK, scope);
+        } else if (available) {
+            warnings.add("embedding 返回空向量，已降级为 ILIKE 检索");
+        } else {
+            warnings.add("embedding 不可用，已降级为 ILIKE 检索");
+        }
+        List<RetrievalResult.Hit> keywordHits = StringUtils.hasText(q) ? keywordSearch(q, keywordTopK, scope) : List.of();
+
+        List<RetrievalResult.Hit> cosine = DiagnoseSupport.dedupe(cosineHits);
+        List<RetrievalResult.Hit> keyword = DiagnoseSupport.dedupe(keywordHits);
+        double[] keywordScores = new double[keyword.size()];
+        for (int i = 0; i < keyword.size(); i++) {
+            keywordScores[i] = PgVectorScoreNormalizer.keywordRankScore(i, keyword.size());
+        }
+
+        List<RetrievalResult.Hit> fused = PgVectorScoreNormalizer.fuse(cosineHits, keywordHits, finalTopK, rankConstant);
+        List<ClientRrfFusion.DetailedFusedDoc> detail = ClientRrfFusion.fuseDetailed(
+                List.of(toRankedDocs(cosine), toRankedDocs(keyword)), rankConstant, finalTopK);
+
+        Map<String, Integer> vectorRank = new LinkedHashMap<>();
+        Map<String, Integer> keywordRank = new LinkedHashMap<>();
+        Map<String, double[]> contributions = new LinkedHashMap<>();
+        for (ClientRrfFusion.DetailedFusedDoc doc : detail) {
+            List<Integer> ranks = doc.ranks();
+            List<Double> contrib = doc.contributions();
+            vectorRank.put(doc.id(), ranks.get(0));
+            keywordRank.put(doc.id(), ranks.get(1));
+            contributions.put(doc.id(), new double[]{contrib.get(0), contrib.get(1)});
+        }
+
+        RetrievalTrace.EmbeddingInfo embedding = new RetrievalTrace.EmbeddingInfo(
+                available,
+                embeddingClient.embeddingConfigId(),
+                embeddingClient.embeddingModelVersion(),
+                embeddingClient.dimensions(),
+                embedMs);
+        return new RetrievalTrace(
+                "pgvector",
+                scope,
+                q,
+                new RetrievalTestOptions(vectorTopK, keywordTopK, finalTopK, minReliable, rankConstant),
+                embedding,
+                DiagnoseSupport.toHits(cosine, null),
+                DiagnoseSupport.toHits(keyword, keywordScores),
+                DiagnoseSupport.fuseHits(fused, vectorRank, keywordRank, contributions, minReliable),
+                List.copyOf(warnings),
+                System.currentTimeMillis() - start);
+    }
+
+    private int defaultRankConstant() {
+        return properties == null || properties.getPgvector() == null
+                ? PgVectorScoreNormalizer.DEFAULT_RANK_CONSTANT
+                : properties.getPgvector().getRrfRankConstant();
+    }
+
+    private static List<ClientRrfFusion.RankedDoc> toRankedDocs(List<RetrievalResult.Hit> hits) {
+        List<ClientRrfFusion.RankedDoc> out = new ArrayList<>();
+        if (hits == null) {
+            return out;
+        }
+        for (RetrievalResult.Hit hit : hits) {
+            out.add(new ClientRrfFusion.RankedDoc(hit.chunkId(), DiagnoseSupport.metaOf(hit, "content_hash") == null
+                    ? null : String.valueOf(DiagnoseSupport.metaOf(hit, "content_hash"))));
+        }
+        return out;
     }
 
     @Override
@@ -131,20 +233,14 @@ public class PgVectorIndexAdapter implements VectorIndexPort {
     public static List<RetrievalResult.Hit> mergeHits(List<RetrievalResult.Hit> cosineHits,
                                                List<RetrievalResult.Hit> keywordHits,
                                                int limit) {
-        Map<String, RetrievalResult.Hit> byId = new LinkedHashMap<>();
-        for (RetrievalResult.Hit hit : cosineHits) {
-            byId.put(hit.chunkId(), hit);
-        }
-        for (RetrievalResult.Hit hit : keywordHits) {
-            RetrievalResult.Hit old = byId.get(hit.chunkId());
-            if (old == null || hit.score() > old.score()) {
-                byId.put(hit.chunkId(), hit);
-            }
-        }
-        return byId.values().stream()
-                .sorted(Comparator.comparingDouble(RetrievalResult.Hit::score).reversed())
-                .limit(Math.max(1, limit))
-                .toList();
+        return mergeHits(cosineHits, keywordHits, limit, PgVectorScoreNormalizer.DEFAULT_RANK_CONSTANT);
+    }
+
+    public static List<RetrievalResult.Hit> mergeHits(List<RetrievalResult.Hit> cosineHits,
+                                               List<RetrievalResult.Hit> keywordHits,
+                                               int limit,
+                                               int rankConstant) {
+        return PgVectorScoreNormalizer.fuse(cosineHits, keywordHits, limit, rankConstant);
     }
 
     public static List<String> likePatterns(String query) {
@@ -162,32 +258,47 @@ public class PgVectorIndexAdapter implements VectorIndexPort {
         return new ArrayList<>(patterns);
     }
 
-    private List<RetrievalResult.Hit> cosineSearch(String query, int limit) {
+    private List<RetrievalResult.Hit> cosineSearch(String query, int limit, String collection) {
         float[] vector = embeddingClient.embed(query);
         if (vector == null) {
-            return keywordSearch(query, limit);
+            return keywordSearch(query, limit, collection);
         }
-        String literal = DocumentIngestService.toVectorLiteral(vector);
+        return cosineSearchByVector(query, DocumentIngestService.toVectorLiteral(vector), limit, collection);
+    }
+
+    private List<RetrievalResult.Hit> cosineSearchByVector(String query, String literal, int limit, String collection) {
+        boolean scoped = StringUtils.hasText(collection);
+        String sql = """
+                SELECT c.chunk_id::text AS chunk_id,
+                       r.content AS content,
+                       c.current_revision AS revision,
+                       r.content_hash AS content_hash,
+                       c.doc_id, c.collection, c.section, c.summary, c.chunk_key,
+                       c.version_id, v.version, v.embedding_config_id,
+                       v.embedding_model_version,
+                       (1 - (c.embedding <=> ?::vector)) AS score
+                FROM kb_chunk c
+                JOIN kb_document_version v ON v.id = c.version_id AND v.status = 'ACTIVE'
+                JOIN kb_chunk_revision r
+                  ON r.chunk_id = c.chunk_id AND r.revision = c.current_revision AND r.status = 'ACTIVE'
+                WHERE c.status = 'ACTIVE'
+                  AND c.embedding IS NOT NULL
+                """
+                + (scoped ? " AND c.domain_name = ? " : "")
+                + """
+                ORDER BY c.embedding <=> ?::vector
+                LIMIT ?
+                """;
+        List<Object> args = new ArrayList<>();
+        args.add(literal);
+        if (scoped) {
+            args.add(collection.trim());
+        }
+        args.add(literal);
+        args.add(limit);
         List<RetrievalResult.Hit> hits = new ArrayList<>();
         try {
-            jdbcTemplate.query("""
-                            SELECT c.chunk_id::text AS chunk_id,
-                                   r.content AS content,
-                                   c.current_revision AS revision,
-                                   r.content_hash AS content_hash,
-                                   c.doc_id, c.collection, c.section, c.summary, c.chunk_key,
-                                   c.version_id, v.version, v.embedding_config_id,
-                                   v.embedding_model_version,
-                                   (1 - (c.embedding <=> ?::vector)) AS score
-                            FROM kb_chunk c
-                            JOIN kb_document_version v ON v.id = c.version_id AND v.status = 'ACTIVE'
-                            JOIN kb_chunk_revision r
-                              ON r.chunk_id = c.chunk_id AND r.revision = c.current_revision AND r.status = 'ACTIVE'
-                            WHERE c.status = 'ACTIVE'
-                              AND c.embedding IS NOT NULL
-                            ORDER BY c.embedding <=> ?::vector
-                            LIMIT ?
-                            """,
+            jdbcTemplate.query(sql,
                     rs -> {
                         while (rs.next()) {
                             hits.add(toHit(
@@ -198,15 +309,15 @@ public class PgVectorIndexAdapter implements VectorIndexPort {
                         }
                         return null;
                     },
-                    literal, literal, limit);
+                    args.toArray());
         } catch (Exception e) {
             log.warn("cosine retrieve failed, fallback ILIKE: {}", e.toString());
-            return keywordSearch(query, limit);
+            return keywordSearch(query, limit, collection);
         }
         return hits;
     }
 
-    private List<RetrievalResult.Hit> keywordSearch(String query, int limit) {
+    private List<RetrievalResult.Hit> keywordSearch(String query, int limit, String collection) {
         List<String> patterns = likePatterns(query);
         if (patterns.isEmpty()) {
             return List.of();
@@ -231,8 +342,15 @@ public class PgVectorIndexAdapter implements VectorIndexPort {
             }
             sql.append("r.content ILIKE ?");
         }
-        sql.append(") ORDER BY length(r.content) ASC LIMIT ?");
+        sql.append(") ");
+        if (StringUtils.hasText(collection)) {
+            sql.append(" AND c.domain_name = ? ");
+        }
+        sql.append(" ORDER BY length(r.content) ASC LIMIT ?");
         List<Object> args = new ArrayList<>(patterns);
+        if (StringUtils.hasText(collection)) {
+            args.add(collection.trim());
+        }
         args.add(limit);
         List<RetrievalResult.Hit> hits = new ArrayList<>();
         try {

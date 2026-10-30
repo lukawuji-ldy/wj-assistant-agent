@@ -122,6 +122,7 @@
                 <configuration>
                     <release>${maven.compiler.release}</release>
                     <encoding>UTF-8</encoding>
+                    <parameters>true</parameters>
                 </configuration>
             </plugin>
             <plugin>
