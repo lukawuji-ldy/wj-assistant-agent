@@ -3,8 +3,11 @@ package com.wuji.assistant.agent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.MonoSink;
+import reactor.core.scheduler.Scheduler;
 
 import java.util.concurrent.Callable;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -33,18 +36,42 @@ public final class DetachedBlockingMono {
      */
     public static <T> Mono<T> fromCallable(Callable<T> call) {
         return Mono.create(sink -> {
-            Thread worker = new Thread(() -> {
-                try {
-                    sink.success(call.call());
-                } catch (Throwable e) {
-                    sink.error(e instanceof RuntimeException re ? re : new RuntimeException(e));
-                }
-            }, "wuji-chat-io-" + SEQ.incrementAndGet());
+            Thread worker = new Thread(() -> runCall(sink, call), "wuji-chat-io-" + SEQ.incrementAndGet());
             worker.setDaemon(true);
             worker.start();
             sink.onCancel(() -> log.warn(
                     "subscriber cancelled; {} continues (non-stream response may still complete)",
                     worker.getName()));
         });
+    }
+
+    /**
+     * 在有界 {@link Scheduler} 上执行阻塞调用。取消订阅时不 {@code dispose} 任务，
+     * 避免 Reactor 打断正在进行的 JDK HttpClient。
+     *
+     * @param scheduler 专用线程池（非流式对话用 {@code llmCallScheduler}）
+     * @param call      阻塞工作
+     * @param <T>       结果类型
+     * @return Mono
+     */
+    public static <T> Mono<T> fromCallable(Scheduler scheduler, Callable<T> call) {
+        return Mono.create(sink -> {
+            try {
+                scheduler.schedule(() -> runCall(sink, call));
+            } catch (RejectedExecutionException e) {
+                sink.error(e);
+                return;
+            }
+            sink.onCancel(() -> log.warn(
+                    "subscriber cancelled; scheduled task continues (non-stream response may still complete)"));
+        });
+    }
+
+    private static <T> void runCall(MonoSink<T> sink, Callable<T> call) {
+        try {
+            sink.success(call.call());
+        } catch (Throwable e) {
+            sink.error(e instanceof RuntimeException re ? re : new RuntimeException(e));
+        }
     }
 }

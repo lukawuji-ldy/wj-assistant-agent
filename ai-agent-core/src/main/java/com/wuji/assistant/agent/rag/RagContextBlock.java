@@ -3,6 +3,7 @@ package com.wuji.assistant.agent.rag;
 import com.wuji.assistant.rag.RetrievalResult;
 import org.springframework.util.StringUtils;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -23,13 +24,26 @@ public final class RagContextBlock {
      * @param result 检索结果，可为 null
      * @return 可拼入 System 的块；无内容时返回空串
      */
+    /**
+     * 只渲染保留下来的命中。没有命中时返回空串，不插入未召回说明。
+     *
+     * @param hits 保留的片段
+     * @return 可拼入系统提示的块
+     */
+    public static String formatHits(List<RetrievalResult.Hit> hits) {
+        if (hits == null || hits.isEmpty()) {
+            return "";
+        }
+        return format(new RetrievalResult(hits, false, null));
+    }
+
     public static String format(RetrievalResult result) {
         if (result == null) {
             return "";
         }
         if (result.rejected() || result.hits() == null || result.hits().isEmpty()) {
-            return MISS_HEADING + "本轮未召回可靠片段。若用户问题可能被已入库文档回答，仍须调用 knowledge_retrieval；"
-                    + "仅当工具也返回 rejected=true 时才能说不在知识库范围内。";
+            return MISS_HEADING + "本轮未召回可靠片段。若用户问题可能被已入库文档回答，仍须调用 knowledge_search；"
+                    + "仅当工具也返回无法检索或无可靠命中时才能说不在知识库范围内。";
         }
         StringBuilder sb = new StringBuilder();
         sb.append(HITS_HEADING)

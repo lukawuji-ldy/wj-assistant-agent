@@ -105,8 +105,8 @@ public class LlmClientFactory {
         if (cfg.getTemperature() != null) {
             optionsBuilder.temperature(cfg.getTemperature().doubleValue());
         }
-        if (cfg.getMaxTokens() != null) {
-            optionsBuilder.maxTokens(cfg.getMaxTokens());
+        if (cfg.getOutputMaxTokens() != null) {
+            optionsBuilder.maxTokens(cfg.getOutputMaxTokens());
         }
         OpenAiChatModel chatModel = OpenAiChatModel.builder()
                 .openAiApi(openAiApi)

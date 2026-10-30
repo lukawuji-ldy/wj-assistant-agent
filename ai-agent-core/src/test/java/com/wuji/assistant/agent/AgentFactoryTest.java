@@ -69,7 +69,7 @@ class AgentFactoryTest {
         when(mcpToolProvider.getTools()).thenReturn(List.of());
         when(checkpointSaverFactory.getSaver()).thenReturn(new MemorySaver());
         agentFactory = new AgentFactory(llmClientFactory, props, checkpointSaverFactory,
-                builtinToolProvider, ragToolProvider, mcpToolProvider);
+                builtinToolProvider, ragToolProvider, mcpToolProvider, null);
     }
 
     @Test
@@ -82,6 +82,15 @@ class AgentFactoryTest {
 
         assertSame(first, second);
         verify(llmClientFactory, times(1)).getChatModel("llm_primary");
+
+
+       /* ReactAgent agent = ReactAgent.builder()
+                .name("my_agent")
+                .model(chatModel)
+                .tools(tools)
+                .hooks(loggingHook, messageTrimmingHook)
+                .interceptors(guardrailInterceptor, retryInterceptor)
+                .build();*/
     }
 
     @Test

@@ -1,8 +1,10 @@
 package com.wuji.assistant.agent.checkpoint;
 
+import com.alibaba.cloud.ai.graph.StateGraph;
 import com.alibaba.cloud.ai.graph.checkpoint.BaseCheckpointSaver;
 import com.alibaba.cloud.ai.graph.checkpoint.savers.MemorySaver;
 import com.alibaba.cloud.ai.graph.checkpoint.savers.postgresql.PostgresSaver;
+import com.alibaba.cloud.ai.graph.serializer.StateSerializer;
 import com.wuji.assistant.agent.config.WujiAgentProperties;
 import com.wuji.assistant.common.exception.ErrorCode;
 import com.wuji.assistant.common.exception.WujiException;
@@ -38,6 +40,16 @@ public class CheckpointSaverFactory {
     }
 
     /**
+     * 图与 PostgresSaver 共用。默认已是 {@code SpringAIJacksonStateSerializer}，
+     * 显式传入避免 Saver 与图各建一份。
+     *
+     * @return 状态序列化器
+     */
+    public static StateSerializer graphSerializer() {
+        return StateGraph.DEFAULT_JACKSON_SERIALIZER;
+    }
+
+    /**
      * 获取进程内单例 Saver。
      *
      * @return Saver
@@ -68,6 +80,7 @@ public class CheckpointSaverFactory {
         boolean createTables = cp.isCreateTables() && !schemaAlreadyApplied(cp);
         try {
             PostgresSaver saver = PostgresSaver.builder()
+                    .stateSerializer(graphSerializer())
                     .host(cp.getHost())
                     .port(cp.getPort())
                     .user(cp.getUsername())
@@ -76,8 +89,8 @@ public class CheckpointSaverFactory {
                     .createTables(createTables)
                     .dropTablesFirst(false)
                     .build();
-            log.info("Checkpoint saver=PostgresSaver host={} db={} createTables={}",
-                    cp.getHost(), cp.getDatabase(), createTables);
+            log.info("Checkpoint saver=PostgresSaver host={} db={} createTables={} serializer={}",
+                    cp.getHost(), cp.getDatabase(), createTables, graphSerializer().getClass().getSimpleName());
             return saver;
         } catch (Exception e) {
             throw new WujiException(ErrorCode.INTERNAL_ERROR, "初始化 PostgresSaver 失败: " + e.getMessage(), e);

@@ -1,10 +1,12 @@
 package com.wuji.assistant.memory.repo;
 
 import com.wuji.assistant.common.util.IdGenerator;
+import com.wuji.assistant.common.token.TokenEstimator;
 import com.wuji.assistant.memory.model.ChatMessage;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
+import org.springframework.util.StringUtils;
 
 import java.sql.Timestamp;
 import java.time.OffsetDateTime;
@@ -75,17 +77,32 @@ public class ChatMessageRepository {
     }
 
     /**
-     * 更新消息正文与状态。
+     * 更新消息正文与状态。token 按主模型词表计算。
      *
      * @param messageId 消息业务键
      * @param content   正文
      * @param status    状态
      */
     public void updateContentAndStatus(String messageId, String content, String status) {
+        updateContentAndStatus(messageId, content, status, null);
+    }
+
+    /**
+     * 更新消息正文与状态，并按指定模型配置计算 token。
+     *
+     * @param messageId 消息业务键
+     * @param content   正文
+     * @param status    状态
+     * @param configId  实际应答的 llm_config.config_id；空则用主模型
+     */
+    public void updateContentAndStatus(String messageId, String content, String status, String configId) {
         String safeContent = sanitizeForPostgres(content);
+        int tokens = StringUtils.hasText(configId)
+                ? TokenEstimator.estimate(safeContent, configId)
+                : TokenEstimator.estimate(safeContent);
         jdbcTemplate.update("""
                 UPDATE chat_message SET content = ?, token_count = ?, status = ? WHERE message_id = ?
-                """, safeContent, estimateTokens(safeContent), status, messageId);
+                """, safeContent, tokens, status, messageId);
     }
 
     /**
@@ -121,13 +138,16 @@ public class ChatMessageRepository {
     }
 
     /**
-     * 拉取 watermark 之后的消息（正序），再按 limit 截取最近段。
+     * 拉取 watermark 之后的最近消息（时间正序）。
+     * <p>
+     * 短期窗口用：{@code ORDER BY create_time DESC LIMIT} 再反转，得到最新 N 条。
+     * 摘要压缩不要用本方法，改用 {@link #listOldestAfterWatermarkAsc}。
      *
      * @param conversationId 会话
      * @param userId         用户
      * @param untilTime      summary_until_time
      * @param limit          窗口上限
-     * @return 正序消息
+     * @return 正序消息（最新一段）
      */
     public List<ChatMessage> listAfterWatermarkAsc(String conversationId, String userId,
                                                   OffsetDateTime untilTime, int limit) {
@@ -144,6 +164,62 @@ public class ChatMessageRepository {
         List<ChatMessage> asc = new ArrayList<>(desc);
         Collections.reverse(asc);
         return asc;
+    }
+
+    /**
+     * 拉取 watermark 之后最早的一段消息（时间正序）。
+     * <p>
+     * 摘要压缩用：每次取紧挨旧 watermark 的连续段，而不是最新 N 条。
+     * {@code untilTime == null} 时不加时间条件，取全会话最旧的 {@code limit} 条。
+     *
+     * @param conversationId 会话
+     * @param userId         用户
+     * @param untilTime      summary_until_time，可空
+     * @param limit          条数上限
+     * @return 正序消息（最旧一段）
+     */
+    public List<ChatMessage> listOldestAfterWatermarkAsc(String conversationId, String userId,
+                                                         OffsetDateTime untilTime, int limit) {
+        if (untilTime == null) {
+            return jdbcTemplate.query("""
+                    SELECT * FROM chat_message
+                    WHERE conversation_id = ? AND user_id = ?
+                    ORDER BY create_time ASC, id ASC
+                    LIMIT ?
+                    """, MAPPER, conversationId, userId, limit);
+        }
+        return jdbcTemplate.query("""
+                SELECT * FROM chat_message
+                WHERE conversation_id = ? AND user_id = ?
+                  AND create_time > ?
+                ORDER BY create_time ASC, id ASC
+                LIMIT ?
+                """, MAPPER, conversationId, userId, Timestamp.from(untilTime.toInstant()), limit);
+    }
+
+    /**
+     * watermark 之后消息的 token_count 合计。{@code untilTime == null} 时统计该会话全部消息。
+     *
+     * @param conversationId 会话
+     * @param userId         用户
+     * @param untilTime      summary_until_time，可空
+     * @return token 合计
+     */
+    public long sumTokenCountAfterWatermark(String conversationId, String userId, OffsetDateTime untilTime) {
+        Long sum;
+        if (untilTime == null) {
+            sum = jdbcTemplate.queryForObject("""
+                    SELECT COALESCE(SUM(token_count), 0) FROM chat_message
+                    WHERE conversation_id = ? AND user_id = ?
+                    """, Long.class, conversationId, userId);
+        } else {
+            sum = jdbcTemplate.queryForObject("""
+                    SELECT COALESCE(SUM(token_count), 0) FROM chat_message
+                    WHERE conversation_id = ? AND user_id = ?
+                      AND create_time > ?
+                    """, Long.class, conversationId, userId, Timestamp.from(untilTime.toInstant()));
+        }
+        return sum == null ? 0L : sum;
     }
 
     /**
@@ -177,10 +253,12 @@ public class ChatMessageRepository {
                 """, conversationId, userId);
     }
 
+    /**
+     * 用户消息与未指定模型时的 token_count：主模型词表。
+     * 助手消息在应答落定时用 {@link TokenEstimator#estimate(String, String)}。
+     * 费用与真实上下文占用以 {@code llm_call_log} 中的 API usage 为准。
+     */
     private static int estimateTokens(String content) {
-        if (content == null || content.isEmpty()) {
-            return 0;
-        }
-        return Math.max(1, content.length() / 2);
+        return TokenEstimator.estimate(content);
     }
 }

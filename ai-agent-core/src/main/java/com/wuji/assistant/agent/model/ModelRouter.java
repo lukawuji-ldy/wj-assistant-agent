@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 /**
  * 模型主备路由：同配置退避重试 + fallbacks 故障转移。
@@ -148,6 +149,7 @@ public class ModelRouter {
         int maxAttempts = Math.max(1, modelProperties.getRetry().getMaxAttempts());
         Duration backoff = modelProperties.getRetry().getBackoff() == null
                 ? Duration.ofSeconds(1) : modelProperties.getRetry().getBackoff();
+        boolean estimateOpen = true;
 
         for (int configIndex = 0; configIndex < ids.size(); configIndex++) {
             String configId = ids.get(configIndex);
@@ -167,14 +169,18 @@ public class ModelRouter {
                             "attempt", String.valueOf(attempt),
                             "is_fallback", String.valueOf(routed.fallback())
                     }, () -> call.apply(routed));
-                    llmCallAuditor.record(successAudit(audit, routed, attempt, (int) (System.currentTimeMillis() - start), value));
+                    Integer estimated = claimEstimate(audit, estimateOpen);
+                    estimateOpen = false;
+                    llmCallAuditor.record(successAudit(audit, routed, attempt, (int) (System.currentTimeMillis() - start), value, estimated));
                     return new RoutedResult<>(value, routed);
                 } catch (Throwable ex) {
                     last = ex;
                     LlmUsageHolder.clear();
                     String errCode = mapErrorCode(ex).getCode();
+                    Integer estimated = claimEstimate(audit, estimateOpen);
+                    estimateOpen = false;
                     llmCallAuditor.record(failedAudit(audit, routed, attempt, (int) (System.currentTimeMillis() - start),
-                            errCode, ex.getMessage()));
+                            errCode, ex.getMessage(), estimated));
                     boolean retryable = isRetryable(ex);
                     log.warn("LLM call failed configId={} attempt={}/{} retryable={} msg={}",
                             configId, attempt, maxAttempts, retryable, ex.toString());
@@ -288,7 +294,8 @@ public class ModelRouter {
     }
 
     private LlmCallAuditor.AuditParams successAudit(AuditContext audit, RoutedClient routed,
-                                                    int attempt, int latencyMs, Object value) {
+                                                    int attempt, int latencyMs, Object value,
+                                                    Integer estimatedPromptTokens) {
         String content = value instanceof String s ? s : String.valueOf(value);
         LlmUsageHolder.Usage usage = LlmUsageHolder.getAndClear();
         return new LlmCallAuditor.AuditParams(
@@ -308,16 +315,39 @@ public class ModelRouter {
                 usage.promptTokens(),
                 usage.completionTokens(),
                 Map.of(
-                        "system", audit.systemPrompt(),
-                        "user", audit.userPrompt(),
+                        "system", liveSystem(audit),
+                        "user", audit.userPrompt() == null ? "" : audit.userPrompt(),
                         "model", routed.config().getModel()
                 ),
-                Map.of("content", content == null ? "" : content)
+                Map.of("content", content == null ? "" : content),
+                estimatedPromptTokens
         );
     }
 
+    private static Integer claimEstimate(AuditContext audit, boolean open) {
+        if (!open || audit == null) {
+            return null;
+        }
+        if (audit.liveEstimate() != null) {
+            Integer live = audit.liveEstimate().get();
+            return live == null || live <= 0 ? null : live;
+        }
+        return audit.estimatedPromptTokens();
+    }
+
+    private static String liveSystem(AuditContext audit) {
+        if (audit != null && audit.liveSystem() != null) {
+            String live = audit.liveSystem().get();
+            if (live != null) {
+                return live;
+            }
+        }
+        return audit == null || audit.systemPrompt() == null ? "" : audit.systemPrompt();
+    }
+
     private LlmCallAuditor.AuditParams failedAudit(AuditContext audit, RoutedClient routed,
-                                                   int attempt, int latencyMs, String errCode, String msg) {
+                                                   int attempt, int latencyMs, String errCode, String msg,
+                                                   Integer estimatedPromptTokens) {
         return new LlmCallAuditor.AuditParams(
                 audit.traceId(),
                 audit.conversationId(),
@@ -335,11 +365,12 @@ public class ModelRouter {
                 null,
                 null,
                 Map.of(
-                        "system", audit.systemPrompt(),
-                        "user", audit.userPrompt(),
+                        "system", liveSystem(audit),
+                        "user", audit.userPrompt() == null ? "" : audit.userPrompt(),
                         "model", routed.config().getModel()
                 ),
-                Map.of("error", msg == null ? "" : msg)
+                Map.of("error", msg == null ? "" : msg),
+                estimatedPromptTokens
         );
     }
 
@@ -450,7 +481,51 @@ public class ModelRouter {
             String bizSource,
             String bizRefId,
             String systemPrompt,
-            String userPrompt
+            String userPrompt,
+            Integer estimatedPromptTokens,
+            Supplier<String> liveSystem,
+            Supplier<Integer> liveEstimate
     ) {
+        public AuditContext(
+                String traceId,
+                String conversationId,
+                String messageId,
+                String userId,
+                String bizSource,
+                String bizRefId,
+                String systemPrompt,
+                String userPrompt) {
+            this(traceId, conversationId, messageId, userId, bizSource, bizRefId,
+                    systemPrompt, userPrompt, null, null, null);
+        }
+
+        public AuditContext(
+                String traceId,
+                String conversationId,
+                String messageId,
+                String userId,
+                String bizSource,
+                String bizRefId,
+                String systemPrompt,
+                String userPrompt,
+                Integer estimatedPromptTokens) {
+            this(traceId, conversationId, messageId, userId, bizSource, bizRefId,
+                    systemPrompt, userPrompt, estimatedPromptTokens, null, null);
+        }
+
+        public AuditContext(
+                String traceId,
+                String conversationId,
+                String messageId,
+                String userId,
+                String bizSource,
+                String bizRefId,
+                String systemPrompt,
+                String userPrompt,
+                Supplier<String> liveSystem,
+                Supplier<Integer> liveEstimate) {
+            this(traceId, conversationId, messageId, userId, bizSource, bizRefId,
+                    systemPrompt, userPrompt, null, liveSystem, liveEstimate);
+        }
     }
 }

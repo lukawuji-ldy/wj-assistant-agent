@@ -8,6 +8,7 @@ import com.wuji.assistant.rag.ingest.IngestRequest;
 import com.wuji.assistant.rag.ingest.IngestResult;
 import com.wuji.assistant.rag.ingest.KbDocumentQueryService;
 import com.wuji.assistant.server.security.CurrentUser;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.multipart.FilePart;
@@ -21,26 +22,28 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
+import reactor.core.scheduler.Scheduler;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
-/**
- * 知识库最小管理 API（JWT；禁信任 body userId）。
- *
- * @author liudy
- */
 @RestController
 @RequestMapping("/api/kb/documents")
 public class KbDocumentController {
 
     private final DocumentIngestService ingestService;
     private final KbDocumentQueryService queryService;
+    private final Scheduler dbScheduler;
+    private final Scheduler kbIngestScheduler;
 
-    public KbDocumentController(DocumentIngestService ingestService, KbDocumentQueryService queryService) {
+    public KbDocumentController(DocumentIngestService ingestService,
+                                KbDocumentQueryService queryService,
+                                @Qualifier("dbScheduler") Scheduler dbScheduler,
+                                @Qualifier("kbIngestScheduler") Scheduler kbIngestScheduler) {
         this.ingestService = ingestService;
         this.queryService = queryService;
+        this.dbScheduler = dbScheduler;
+        this.kbIngestScheduler = kbIngestScheduler;
     }
 
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
@@ -49,7 +52,7 @@ public class KbDocumentController {
             IngestResult result = ingestService.ingest(new IngestRequest(
                     body.docId(), body.title(), body.collection(), body.content(), body.source()));
             return ApiResponse.ok(result);
-        }).subscribeOn(Schedulers.boundedElastic()));
+        }).subscribeOn(kbIngestScheduler));
     }
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -73,7 +76,7 @@ public class KbDocumentController {
                             IngestResult result = ingestService.ingest(new IngestRequest(
                                     docId, t, collection, content, name));
                             return ApiResponse.ok(result);
-                        }).subscribeOn(Schedulers.boundedElastic());
+                        }).subscribeOn(kbIngestScheduler);
                     } finally {
                         DataBufferUtils.release(dataBuffer);
                     }
@@ -84,7 +87,7 @@ public class KbDocumentController {
     public Mono<ApiResponse<Object>> list(@RequestParam(value = "collection", required = false) String collection) {
         return CurrentUser.require().flatMap(user -> Mono.fromCallable(() ->
                 ApiResponse.ok((Object) queryService.listDocuments(collection))
-        ).subscribeOn(Schedulers.boundedElastic()));
+        ).subscribeOn(dbScheduler));
     }
 
     @GetMapping("/{docId}")
@@ -95,7 +98,7 @@ public class KbDocumentController {
                 throw new WujiException(ErrorCode.NOT_FOUND, "文档不存在");
             }
             return ApiResponse.ok((Object) detail);
-        }).subscribeOn(Schedulers.boundedElastic()));
+        }).subscribeOn(dbScheduler));
     }
 
     @PostMapping("/{docId}/versions/{versionId}/deprecate")
@@ -103,12 +106,9 @@ public class KbDocumentController {
         return CurrentUser.require().flatMap(user -> Mono.fromCallable(() -> {
             ingestService.deprecate(docId, versionId);
             return ApiResponse.<Void>ok(null);
-        }).subscribeOn(Schedulers.boundedElastic()));
+        }).subscribeOn(dbScheduler));
     }
 
-    /**
-     * JSON 入库体。
-     */
     public record IngestTextBody(
             String docId,
             String title,

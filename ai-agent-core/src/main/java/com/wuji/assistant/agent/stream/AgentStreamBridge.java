@@ -19,10 +19,11 @@ public final class AgentStreamBridge {
      * 仅透出助手文本；非 AssistantMessage 忽略。
      * 框架把 LLM 异常写成 {@code Exception: ...} 时转为 Flux error，避免当成 delta 推给用户。
      *
-     * @param messages ReactAgent.streamMessages 输出
+     * @param messages CheckpointGraphCaller 抽出的助手消息
      * @return 文本增量流
      */
     public static Flux<String> toContentDeltas(Flux<Message> messages) {
+        java.util.concurrent.atomic.AtomicReference<String> previous = new java.util.concurrent.atomic.AtomicReference<>("");
         return messages
                 .filter(AssistantMessage.class::isInstance)
                 .map(AssistantMessage.class::cast)
@@ -34,7 +35,12 @@ public final class AgentStreamBridge {
                         sink.error(swallowed);
                         return;
                     }
-                    sink.next(text);
+                    String prior = previous.get();
+                    String delta = text.startsWith(prior) ? text.substring(prior.length()) : text;
+                    previous.set(text);
+                    if (!delta.isEmpty()) {
+                        sink.next(delta);
+                    }
                 });
     }
 }

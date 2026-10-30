@@ -11,7 +11,7 @@
 | 能力 | 说明 |
 |---|---|
 | 大模型对话 | 流式 `POST /api/chat/stream`（SSE）与非流式 `POST /api/chat`；User JWT 鉴权 |
-| Agentic RAG | `knowledge_retrieval` 工具 + 可选预检索；PGVector / Elasticsearch Hybrid 二选一 |
+| Agentic RAG | `knowledge_search` 拉起领域子 Agent；PGVector / Elasticsearch Hybrid 二选一 |
 | Agent 编排 | Spring AI Alibaba `ReactAgent` + `ModelRouter` 主备；有界轮次，禁止无限循环 |
 | MCP | 独立 `assistant-mcp-server`；Client 按库表动态 SSE 连接与工具绑定 |
 | 记忆 | 短期窗口/摘要 + 长期画像/语义记忆（Action 写入、Router 按需入模） |

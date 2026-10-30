@@ -34,7 +34,7 @@ class RagContextBlockTest {
     void formatRejectedRemindsToCallTool() {
         String block = RagContextBlock.format(new RetrievalResult(List.of(), true, "无可靠知识命中"));
         assertTrue(block.contains(RagContextBlock.MISS_HEADING), block);
-        assertTrue(block.contains("knowledge_retrieval"), block);
+        assertTrue(block.contains("knowledge_search"), block);
         assertFalse(block.contains(RagContextBlock.HITS_HEADING), block);
     }
 }

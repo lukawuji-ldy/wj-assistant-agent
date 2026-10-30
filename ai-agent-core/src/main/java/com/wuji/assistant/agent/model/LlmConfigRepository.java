@@ -33,10 +33,13 @@ public class LlmConfigRepository {
         r.setApiKeyCipher(rs.getString("api_key_cipher"));
         r.setModel(rs.getString("model"));
         r.setTemperature(rs.getBigDecimal("temperature"));
-        int maxTokens = rs.getInt("max_tokens");
-        r.setMaxTokens(rs.wasNull() ? null : maxTokens);
+        int outputMaxTokens = rs.getInt("output_max_tokens");
+        r.setOutputMaxTokens(rs.wasNull() ? null : outputMaxTokens);
+        int contextWindow = rs.getInt("context_window_size");
+        r.setContextWindowSize(rs.wasNull() ? null : contextWindow);
         Object extra = rs.getObject("extra_json");
         r.setExtraJson(extra == null ? null : extra.toString());
+        r.setTokenEncoding(rs.getString("token_encoding"));
         r.setStatus(rs.getString("status"));
         Timestamp ct = rs.getTimestamp("create_time");
         Timestamp ut = rs.getTimestamp("update_time");
@@ -159,8 +162,8 @@ public class LlmConfigRepository {
         jdbcTemplate.update("""
                 INSERT INTO llm_config
                 (id, config_id, name, provider, model_kind, base_url, api_key_cipher, model,
-                 temperature, max_tokens, extra_json, status, create_time, update_time)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?)
+                 temperature, output_max_tokens, extra_json, token_encoding, context_window_size, status, create_time, update_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?)
                 """,
                 id,
                 record.getConfigId(),
@@ -171,12 +174,17 @@ public class LlmConfigRepository {
                 record.getApiKeyCipher(),
                 record.getModel(),
                 record.getTemperature(),
-                record.getMaxTokens(),
+                record.getOutputMaxTokens(),
                 blankToEmptyJson(record.getExtraJson()),
+                blankToNull(record.getTokenEncoding()),
+                record.contextWindowOrDefault(),
                 record.getStatus(),
                 now,
                 now);
         record.setId(id);
+        if (record.getContextWindowSize() == null || record.getContextWindowSize() <= 0) {
+            record.setContextWindowSize(record.contextWindowOrDefault());
+        }
     }
 
     /**
@@ -191,8 +199,8 @@ public class LlmConfigRepository {
             jdbcTemplate.update("""
                     UPDATE llm_config SET
                       name = ?, provider = ?, model_kind = ?, base_url = ?, api_key_cipher = ?,
-                      model = ?, temperature = ?, max_tokens = ?, extra_json = CAST(? AS jsonb),
-                      status = ?, update_time = ?
+                      model = ?, temperature = ?, output_max_tokens = ?, extra_json = CAST(? AS jsonb),
+                      token_encoding = ?, context_window_size = ?, status = ?, update_time = ?
                     WHERE config_id = ?
                     """,
                     record.getName(),
@@ -202,8 +210,10 @@ public class LlmConfigRepository {
                     record.getApiKeyCipher(),
                     record.getModel(),
                     record.getTemperature(),
-                    record.getMaxTokens(),
+                    record.getOutputMaxTokens(),
                     blankToEmptyJson(record.getExtraJson()),
+                    blankToNull(record.getTokenEncoding()),
+                    record.contextWindowOrDefault(),
                     record.getStatus(),
                     now,
                     record.getConfigId());
@@ -211,8 +221,8 @@ public class LlmConfigRepository {
             jdbcTemplate.update("""
                     UPDATE llm_config SET
                       name = ?, provider = ?, model_kind = ?, base_url = ?,
-                      model = ?, temperature = ?, max_tokens = ?, extra_json = CAST(? AS jsonb),
-                      status = ?, update_time = ?
+                      model = ?, temperature = ?, output_max_tokens = ?, extra_json = CAST(? AS jsonb),
+                      token_encoding = ?, context_window_size = ?, status = ?, update_time = ?
                     WHERE config_id = ?
                     """,
                     record.getName(),
@@ -221,8 +231,10 @@ public class LlmConfigRepository {
                     record.getBaseUrl(),
                     record.getModel(),
                     record.getTemperature(),
-                    record.getMaxTokens(),
+                    record.getOutputMaxTokens(),
                     blankToEmptyJson(record.getExtraJson()),
+                    blankToNull(record.getTokenEncoding()),
+                    record.contextWindowOrDefault(),
                     record.getStatus(),
                     now,
                     record.getConfigId());
@@ -246,5 +258,9 @@ public class LlmConfigRepository {
             return "{}";
         }
         return extraJson;
+    }
+
+    private static String blankToNull(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
     }
 }

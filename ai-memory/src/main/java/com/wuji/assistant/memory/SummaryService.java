@@ -15,9 +15,11 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
- * 会话摘要：条数/token 阈值触发滚动合并（MVP：规则结构化 JSON，不强制 LLM）。
+ * 会话摘要：条数或 watermark 后 token 阈值触发，压缩紧挨旧 watermark 的最旧连续段。
+ * 规则 JSON 由本类生成；LLM 合并在 {@code ai-agent-core} 的编排器中，失败时回落到本类。
  *
  * @author liudy
  */
@@ -39,41 +41,119 @@ public class SummaryService {
     }
 
     /**
-     * 达到阈值则压缩；失败只打日志。
+     * 待压缩的一段：旧摘要 + 紧挨 watermark 的最旧消息（不含保留尾部）。
+     *
+     * @param conversationId 会话
+     * @param oldSummaryJson 当前 summary，可空
+     * @param toCompress     本次压入摘要的消息（时间正序）
+     * @param lastCovered    本段最后一条，watermark 落到它
+     */
+    public record CompressionBatch(
+            String conversationId,
+            String oldSummaryJson,
+            List<ChatMessage> toCompress,
+            ChatMessage lastCovered
+    ) {
+    }
+
+    /**
+     * 达到条数或 token 阈值则用规则压缩；失败只打日志。
      *
      * @param userId                   用户
      * @param conversationId           会话
-     * @param compressMessageThreshold 消息条数阈值
-     * @param keepRecentMessages       压缩后仍保留在窗口外最近条数（不压入摘要的尾部）
+     * @param compressMessageThreshold 消息条数阈值（lifetime {@code message_count}）
+     * @param keepRecentMessages       不压入摘要的尾部条数
+     * @param compressTokenThreshold   watermark 之后 token 合计阈值；0 表示不按 token 触发
      */
     public void compressIfNeeded(String userId, String conversationId,
-                                 int compressMessageThreshold, int keepRecentMessages) {
+                                 int compressMessageThreshold, int keepRecentMessages,
+                                 int compressTokenThreshold) {
         try {
-            Conversation conversation = conversationRepository.requireOwned(userId, conversationId);
-            if (conversation.getMessageCount() < Math.max(2, compressMessageThreshold)) {
+            Optional<CompressionBatch> batch = prepare(
+                    userId, conversationId, compressMessageThreshold, keepRecentMessages, compressTokenThreshold);
+            if (batch.isEmpty()) {
                 return;
             }
-            int keep = Math.max(2, keepRecentMessages);
-            // 取 watermark 后足够多的消息，压掉「除最近 keep 条」以外的段
-            List<ChatMessage> after = chatMessageRepository.listAfterWatermarkAsc(
-                    conversationId, userId, conversation.getSummaryUntilTime(),
-                    compressMessageThreshold + keep);
-            if (after.size() <= keep) {
-                return;
-            }
-            List<ChatMessage> toCompress = after.subList(0, after.size() - keep);
-            ChatMessage last = toCompress.get(toCompress.size() - 1);
-            String summaryJson = buildRollingSummary(conversation.getSummary(), toCompress);
-            conversationRepository.updateSummary(
-                    conversationId, summaryJson, last.getCreateTime(), last.getMessageId());
+            CompressionBatch ready = batch.get();
+            String summaryJson = buildRollingSummary(ready.oldSummaryJson(), ready.toCompress());
+            commitSummary(ready, summaryJson);
             log.info("summary compressed conversationId={} untilMsg={} facts≈{}",
-                    conversationId, last.getMessageId(), toCompress.size());
+                    conversationId, ready.lastCovered().getMessageId(), ready.toCompress().size());
         } catch (Exception e) {
             log.warn("compressIfNeeded failed conversationId={}: {}", conversationId, e.toString());
         }
     }
 
-    String buildRollingSummary(String oldSummaryJson, List<ChatMessage> messages) throws Exception {
+    /**
+     * 选出本次应压缩的最旧连续段。未达阈值或剩余条数不超过保留尾部时为空。
+     *
+     * @param userId                   用户
+     * @param conversationId           会话
+     * @param compressMessageThreshold 条数阈值
+     * @param keepRecentMessages       保留尾部
+     * @param compressTokenThreshold   token 阈值
+     * @return 待压缩批次
+     */
+    public Optional<CompressionBatch> prepare(String userId, String conversationId,
+                                              int compressMessageThreshold, int keepRecentMessages,
+                                              int compressTokenThreshold) {
+        Conversation conversation = conversationRepository.requireOwned(userId, conversationId);
+        int keep = Math.max(2, keepRecentMessages);
+        int messageThreshold = Math.max(2, compressMessageThreshold);
+        boolean byCount = conversation.getMessageCount() >= messageThreshold;
+        long tokens = chatMessageRepository.sumTokenCountAfterWatermark(
+                conversationId, userId, conversation.getSummaryUntilTime());
+        boolean byTokens = compressTokenThreshold > 0 && tokens >= compressTokenThreshold;
+        if (!byCount && !byTokens) {
+            return Optional.empty();
+        }
+        List<ChatMessage> oldest = chatMessageRepository.listOldestAfterWatermarkAsc(
+                conversationId, userId, conversation.getSummaryUntilTime(), messageThreshold + keep);
+        if (oldest.size() <= keep) {
+            return Optional.empty();
+        }
+        List<ChatMessage> toCompress = new ArrayList<>(oldest.subList(0, oldest.size() - keep));
+        ChatMessage last = toCompress.get(toCompress.size() - 1);
+        return Optional.of(new CompressionBatch(
+                conversationId, conversation.getSummary(), toCompress, last));
+    }
+
+    /**
+     * 写入滚动摘要并把 watermark 移到本段最后一条。
+     *
+     * @param batch       待提交批次
+     * @param summaryJson 结构化摘要
+     */
+    public void commitSummary(CompressionBatch batch, String summaryJson) {
+        ChatMessage last = batch.lastCovered();
+        conversationRepository.updateSummary(
+                batch.conversationId(), summaryJson, last.getCreateTime(), last.getMessageId());
+    }
+
+    /**
+     * 紧急压缩：不再看条数或 token 阈值，把 watermark 之后除最近 {@code keepRecentMessages} 条以外的消息压成一段。
+     *
+     * @param userId             用户
+     * @param conversationId     会话
+     * @param keepRecentMessages 保留尾部
+     * @return 待压缩批次；剩余条数不超过保留尾部时为空
+     */
+    public Optional<CompressionBatch> prepareForced(String userId, String conversationId, int keepRecentMessages) {
+        Conversation conversation = conversationRepository.requireOwned(userId, conversationId);
+        int keep = Math.max(2, keepRecentMessages);
+        int limit = Math.max(keep + 1, conversation.getMessageCount());
+        List<ChatMessage> oldest = chatMessageRepository.listOldestAfterWatermarkAsc(
+                conversationId, userId, conversation.getSummaryUntilTime(), limit);
+        if (oldest.size() <= keep) {
+            return Optional.empty();
+        }
+        List<ChatMessage> toCompress = new ArrayList<>(oldest.subList(0, oldest.size() - keep));
+        ChatMessage last = toCompress.get(toCompress.size() - 1);
+        return Optional.of(new CompressionBatch(
+                conversationId, conversation.getSummary(), toCompress, last));
+    }
+
+    public String buildRollingSummary(String oldSummaryJson, List<ChatMessage> messages) throws Exception {
         Map<String, Object> summary = new LinkedHashMap<>();
         List<String> facts = new ArrayList<>();
         List<String> pending = new ArrayList<>();
@@ -90,11 +170,12 @@ public class SummaryService {
                 Object f = old.get("facts");
                 if (f instanceof List<?> list) {
                     for (Object o : list) {
-                        if (o != null && facts.size() < 20) {
-                            String fact = PostgresText.sanitize(String.valueOf(o));
-                            if (StringUtils.hasText(fact)) {
-                                facts.add(fact);
-                            }
+                        if (o == null) {
+                            continue;
+                        }
+                        String fact = PostgresText.sanitize(String.valueOf(o));
+                        if (StringUtils.hasText(fact)) {
+                            facts.add(fact);
                         }
                     }
                 }
@@ -129,9 +210,10 @@ public class SummaryService {
             if ("user".equalsIgnoreCase(m.getRole()) && goal == null) {
                 goal = snippet;
             }
-            if (facts.size() < 20) {
-                facts.add(m.getRole() + ": " + snippet);
-            }
+            facts.add(m.getRole() + ": " + snippet);
+        }
+        while (facts.size() > 20) {
+            facts.remove(0);
         }
         summary.put("goal", goal == null ? "" : goal);
         summary.put("facts", facts);

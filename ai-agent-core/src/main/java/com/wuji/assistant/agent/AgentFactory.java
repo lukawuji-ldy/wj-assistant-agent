@@ -13,16 +13,23 @@ import com.wuji.assistant.agent.model.SwallowedLlmErrorInterceptor;
 import com.wuji.assistant.agent.prompt.PromptTemplateChangedEvent;
 import com.wuji.assistant.agent.prompt.WujiSystemPromptInterceptor;
 import com.wuji.assistant.agent.tool.BuiltinToolProvider;
+import com.wuji.assistant.agent.tool.KnowledgeSearchLinkInterceptor;
 import com.wuji.assistant.agent.tool.McpToolHashChangedEvent;
 import com.wuji.assistant.agent.tool.McpToolProvider;
 import com.wuji.assistant.agent.tool.RagToolProvider;
+import com.wuji.assistant.agent.token.TokenBudgetEnforcer;
+import com.wuji.assistant.agent.token.TokenBudgetInterceptor;
+import com.wuji.assistant.agent.token.TokenCounter;
+import com.wuji.assistant.agent.token.TokenCounterRegistry;
 import com.wuji.assistant.common.exception.ErrorCode;
 import com.wuji.assistant.common.exception.WujiException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.event.EventListener;
+import com.alibaba.cloud.ai.graph.agent.interceptor.Interceptor;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -32,6 +39,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 按 llm configId 构建并缓存有界 ReactAgent（PostgresSaver / MemorySaver）。
+ * 图与 Saver 共用 {@link CheckpointSaverFactory#graphSerializer()}。
  *
  * @author liudy
  */
@@ -46,20 +54,24 @@ public class AgentFactory {
     private final BuiltinToolProvider builtinToolProvider;
     private final RagToolProvider ragToolProvider;
     private final McpToolProvider mcpToolProvider;
+    private final TokenBudgetEnforcer enforcer;
     private final ConcurrentHashMap<String, ReactAgent> cache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Integer> toolSchemaTokens = new ConcurrentHashMap<>();
 
     public AgentFactory(LlmClientFactory llmClientFactory,
                         WujiAgentProperties agentProperties,
                         CheckpointSaverFactory checkpointSaverFactory,
                         BuiltinToolProvider builtinToolProvider,
                         RagToolProvider ragToolProvider,
-                        McpToolProvider mcpToolProvider) {
+                        McpToolProvider mcpToolProvider,
+                        TokenBudgetEnforcer enforcer) {
         this.llmClientFactory = llmClientFactory;
         this.agentProperties = agentProperties;
         this.checkpointSaverFactory = checkpointSaverFactory;
         this.builtinToolProvider = builtinToolProvider;
         this.ragToolProvider = ragToolProvider;
         this.mcpToolProvider = mcpToolProvider;
+        this.enforcer = enforcer;
     }
 
     /**
@@ -82,18 +94,32 @@ public class AgentFactory {
      */
     public void invalidate(String configId) {
         cache.remove(configId);
+        toolSchemaTokens.remove(configId);
         log.info("ReactAgent cache invalidated, configId={}", configId);
+    }
+
+    /**
+     * 构建 Agent 时按 configId 计一次工具 schema，随 Agent 缓存失效。
+     *
+     * @param configId 配置键
+     * @return 工具定义 token
+     */
+    public int toolSchemaTokens(String configId) {
+        getOrCreate(configId);
+        return toolSchemaTokens.getOrDefault(configId, 0);
     }
 
     @EventListener
     public void onMcpToolHashChanged(McpToolHashChangedEvent event) {
         cache.clear();
+        toolSchemaTokens.clear();
         log.info("ReactAgent cache cleared due to MCP toolHash change: {}", event.toolHash());
     }
 
     @EventListener
     public void onPromptTemplateChanged(PromptTemplateChangedEvent event) {
         cache.clear();
+        toolSchemaTokens.clear();
         log.info("ReactAgent cache cleared due to prompt change: {}", event.code());
     }
 
@@ -123,6 +149,9 @@ public class AgentFactory {
     private ReactAgent build(String configId) {
         ChatModel chatModel = llmClientFactory.getChatModel(configId);
         List<ToolCallback> tools = aggregateTools();
+        TokenCounter counter = TokenCounterRegistry.forConfig(configId);
+        int schemaTokens = counter.countTools(toolDefinitions(tools));
+        toolSchemaTokens.put(configId, schemaTokens);
         int maxModelCalls = Math.max(1, agentProperties.getMaxModelCalls());
         int maxToolRounds = Math.max(1, agentProperties.getMaxToolRounds());
         BaseCheckpointSaver saver = checkpointSaverFactory.getSaver();
@@ -143,8 +172,9 @@ public class AgentFactory {
                 .name(agentName)
                 .model(chatModel)
                 .saver(saver)
+                .stateSerializer(CheckpointSaverFactory.graphSerializer())
                 .hooks(modelLimit, toolLimit)
-                .interceptors(new WujiSystemPromptInterceptor(), new SwallowedLlmErrorInterceptor());
+                .interceptors(interceptors(configId, schemaTokens).toArray(Interceptor[]::new));
         if (!tools.isEmpty()) {
             builder.tools(tools);
         }
@@ -152,6 +182,33 @@ public class AgentFactory {
         log.info("ReactAgent initialized, name={}, configId={}, tools={}, maxModelCalls={}, maxToolRounds={}",
                 agentName, configId, tools.size(), maxModelCalls, maxToolRounds);
         return agent;
+    }
+
+    private List<Interceptor> interceptors(String configId, int schemaTokens) {
+        List<Interceptor> interceptors = new ArrayList<>();
+        interceptors.add(new WujiSystemPromptInterceptor());
+        interceptors.add(new SwallowedLlmErrorInterceptor());
+        interceptors.add(new TokenBudgetInterceptor(configId, schemaTokens, enforcer));
+        interceptors.add(new KnowledgeSearchLinkInterceptor());
+        return interceptors;
+    }
+
+    private static List<ToolDefinition> toolDefinitions(List<ToolCallback> tools) {
+        List<ToolDefinition> definitions = new ArrayList<>();
+        for (ToolCallback tool : tools) {
+            if (tool == null) {
+                continue;
+            }
+            try {
+                ToolDefinition definition = tool.getToolDefinition();
+                if (definition != null) {
+                    definitions.add(definition);
+                }
+            } catch (RuntimeException ignored) {
+                // 单个工具定义读失败不影响其余工具计数
+            }
+        }
+        return definitions;
     }
 
     private List<ToolCallback> aggregateTools() {

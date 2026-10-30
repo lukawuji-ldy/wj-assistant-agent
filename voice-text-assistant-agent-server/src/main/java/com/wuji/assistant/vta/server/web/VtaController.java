@@ -17,13 +17,14 @@ import com.wuji.assistant.vta.server.web.dto.VtaAnalyzeDtos.AnalyzeStreamRequest
 import com.wuji.assistant.vta.server.web.dto.VtaAnalyzeDtos.DonePayload;
 import com.wuji.assistant.vta.server.web.dto.VtaAnalyzeDtos.JobDetail;
 import com.wuji.assistant.vta.server.web.dto.VtaAnalyzeDtos.JobSummary;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
+import reactor.core.scheduler.Scheduler;
 import org.springframework.beans.factory.annotation.Value;
 
 @RestController
@@ -36,6 +37,8 @@ public class VtaController {
     private final VtaAnalysisExecutor vtaAnalysisExecutor;
     private final ObjectMapper objectMapper;
     private final VtaStreamSessionRegistry streamRegistry;
+    private final Scheduler vtaDbScheduler;
+    private final Scheduler vtaLlmCallScheduler;
 
     private final int maxTranscriptChars;
 
@@ -43,11 +46,15 @@ public class VtaController {
                           VtaAnalysisExecutor vtaAnalysisExecutor,
                           ObjectMapper objectMapper,
                           VtaStreamSessionRegistry streamRegistry,
+                          @Qualifier("vtaDbScheduler") Scheduler vtaDbScheduler,
+                          @Qualifier("vtaLlmCallScheduler") Scheduler vtaLlmCallScheduler,
                           @Value("${wuji.vta.input.max-chars:20000}") int maxTranscriptChars) {
         this.jobRepository = jobRepository;
         this.vtaAnalysisExecutor = vtaAnalysisExecutor;
         this.objectMapper = objectMapper;
         this.streamRegistry = streamRegistry;
+        this.vtaDbScheduler = vtaDbScheduler;
+        this.vtaLlmCallScheduler = vtaLlmCallScheduler;
         this.maxTranscriptChars = maxTranscriptChars;
     }
 
@@ -68,7 +75,7 @@ public class VtaController {
                                 user.tenantId(),
                                 request.inputType() == null ? "TEXT" : request.inputType(),
                                 transcript))
-                        .subscribeOn(Schedulers.boundedElastic())
+                        .subscribeOn(vtaDbScheduler)
                         .map(jobId -> ApiResponse.ok(new AnalyzeResponse(jobId))));
     }
 
@@ -87,7 +94,7 @@ public class VtaController {
         return com.wuji.assistant.vta.server.security.CurrentUser.require()
                 .flatMapMany(user -> Mono.fromCallable(() -> jobRepository.findOwned(jobId, user.userId())
                                 .orElseThrow(() -> new WujiException(ErrorCode.NOT_FOUND, "VTA_JOB_NOT_FOUND")))
-                        .subscribeOn(Schedulers.boundedElastic())
+                        .subscribeOn(vtaDbScheduler)
                         .flatMapMany(row -> {
                             VtaStreamSessionRegistry.Entry entry = streamRegistry.getOrCreate(jobId, user.userId());
                             Long last = effective.lastEventId();
@@ -102,7 +109,7 @@ public class VtaController {
     public Mono<ApiResponse<JobDetail>> getJob(@PathVariable String jobId) {
         return com.wuji.assistant.vta.server.security.CurrentUser.require()
                 .flatMap(user -> Mono.fromCallable(() -> jobRepository.findOwnedDetail(jobId, user.userId()))
-                        .subscribeOn(Schedulers.boundedElastic())
+                        .subscribeOn(vtaDbScheduler)
                         .flatMap(opt -> opt.map(detail -> {
                                     var job = detail.job();
                                     return Mono.just(ApiResponse.ok(new JobDetail(
@@ -136,7 +143,7 @@ public class VtaController {
                                         row.traceId(),
                                         row.createTime() == null ? null : row.createTime().toString()))
                                 .toList())
-                        .subscribeOn(Schedulers.boundedElastic())
+                        .subscribeOn(vtaDbScheduler)
                         .map(ApiResponse::ok));
     }
 
@@ -144,14 +151,12 @@ public class VtaController {
         String traceId = IdGenerator.nextBizId("tr_");
         jobRepository.markRunning(row.jobId(), traceId);
 
-        // meta 事件让前端知道 streamId
         try {
             String meta = objectMapper.writeValueAsString(
                     java.util.Map.of("streamId", entry.session().getStreamId()));
             ServerSentEvent<String> metaEvent = entry.session().append("meta", meta);
             entry.emitNext(metaEvent);
         } catch (JsonProcessingException ignore) {
-            // ignore
         }
 
         VtaAnalysisObserver observer = (nodeName, parsedJson) -> {
@@ -160,21 +165,18 @@ public class VtaController {
                 ServerSentEvent<String> ev = entry.session().append(nodeName, data);
                 entry.emitNext(ev);
             } catch (Exception ignore) {
-                // SSE 发送失败不影响落库
             }
         };
 
-        // 后台执行并落库
         Mono.fromCallable(() -> vtaAnalysisExecutor.execute(
                         row.jobId(),
                         userId,
                         row.transcriptText(),
                         traceId,
                         observer))
-                .subscribeOn(Schedulers.boundedElastic())
+                .subscribeOn(vtaLlmCallScheduler)
                 .subscribe(result -> {
                     VtaAnalysisStatus status = result.status();
-                    // PARTIAL 视作已生成结果（但字段可能带 error）
                     jobRepository.upsertResult(
                             row.jobId(),
                             result.customerTags(),
@@ -191,7 +193,6 @@ public class VtaController {
                         default -> jobRepository.markFailed(row.jobId(), "FAILED");
                     }
 
-                    // done 事件（前端用来渲染最终 aggregate）
                     try {
                         var done = new DonePayload(
                                 row.jobId(),
@@ -207,7 +208,6 @@ public class VtaController {
                         ServerSentEvent<String> ev = entry.session().append("done", doneJson);
                         entry.emitNext(ev);
                     } catch (Exception ignore) {
-                        // ignore
                     }
 
                     entry.markCompleted();
@@ -219,7 +219,6 @@ public class VtaController {
                         ServerSentEvent<String> ev = entry.session().append("error", data);
                         entry.emitNext(ev);
                     } catch (Exception ignore) {
-                        // ignore
                     }
                     entry.markCompleted();
                     entry.sink().tryEmitComplete();
@@ -252,4 +251,3 @@ public class VtaController {
         }
     }
 }
-

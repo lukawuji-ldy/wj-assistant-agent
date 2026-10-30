@@ -1,11 +1,14 @@
 package com.wuji.assistant.agent.checkpoint;
 
+import com.alibaba.cloud.ai.graph.StateGraph;
 import com.alibaba.cloud.ai.graph.checkpoint.savers.MemorySaver;
+import com.alibaba.cloud.ai.graph.serializer.plain_text.jackson.SpringAIJacksonStateSerializer;
 import com.wuji.assistant.agent.config.WujiAgentProperties;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -34,5 +37,11 @@ class CheckpointSaverFactoryTest {
     @Test
     void createTables_defaultsToFalse() {
         assertFalse(new WujiAgentProperties().getCheckpoint().isCreateTables());
+    }
+
+    @Test
+    void graphSerializer_isSpringAiJackson() {
+        assertSame(StateGraph.DEFAULT_JACKSON_SERIALIZER, CheckpointSaverFactory.graphSerializer());
+        assertInstanceOf(SpringAIJacksonStateSerializer.class, CheckpointSaverFactory.graphSerializer());
     }
 }

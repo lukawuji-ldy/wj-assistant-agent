@@ -3,6 +3,8 @@ package com.wuji.assistant.agent;
 import org.junit.jupiter.api.Test;
 import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Scheduler;
+import reactor.core.scheduler.Schedulers;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -57,5 +59,36 @@ class DetachedBlockingMonoTest {
                 });
         assertTrue(done.await(2, TimeUnit.SECONDS));
         assertEquals("hello", value.get());
+    }
+
+    @Test
+    void schedulerDispose_doesNotInterruptWorker() throws Exception {
+        Scheduler scheduler = Schedulers.newBoundedElastic(2, 10, "test-llm");
+        try {
+            CountDownLatch started = new CountDownLatch(1);
+            CountDownLatch finished = new CountDownLatch(1);
+            AtomicBoolean interrupted = new AtomicBoolean(false);
+
+            Mono<String> mono = DetachedBlockingMono.fromCallable(scheduler, () -> {
+                started.countDown();
+                try {
+                    Thread.sleep(250);
+                } catch (InterruptedException e) {
+                    interrupted.set(true);
+                    Thread.currentThread().interrupt();
+                    throw e;
+                }
+                finished.countDown();
+                return "ok";
+            });
+
+            Disposable d = mono.subscribe();
+            assertTrue(started.await(2, TimeUnit.SECONDS));
+            d.dispose();
+            assertTrue(finished.await(2, TimeUnit.SECONDS));
+            assertFalse(interrupted.get());
+        } finally {
+            scheduler.dispose();
+        }
     }
 }

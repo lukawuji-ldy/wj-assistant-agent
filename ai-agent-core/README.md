@@ -6,7 +6,7 @@ Agent 编排核心库（jar）：ReactAgent 构建、工具注册与执行门面
 
 - **Agent 工厂**：基于 Spring AI Alibaba 构建有界 `ReactAgent`（最大模型调用 / 工具轮次）
 - **模型路由**：`ModelRouter` 支持 primary + fallbacks（仅 `llm_config` 的 `CHAT` 行）；吞掉的 429 等可重抛后再切备用
-- **工具装配**：RAG `knowledge_retrieval`、MCP 工具（Registry / allowlist）等
+- **工具装配**：RAG `knowledge_search`、MCP 工具（Registry / allowlist）等
 - **执行门面**：统一封装调用、失败与达上限策略（如 `AGENT_MAX_ITERATIONS`）
 - **Checkpoint**：与 PostgresSaver 配合，支撑管理台回放（管理 API 在旁路仓）
 

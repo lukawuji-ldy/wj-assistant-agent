@@ -16,6 +16,12 @@ spring:
     username: postgres
     password: 1234567890
     driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 10000
+      idle-timeout: 600000
+      max-lifetime: 1800000
   flyway:
     enabled: true
     locations: classpath:db/migration
@@ -56,6 +62,19 @@ management:
       endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://127.0.0.1:4318/v1/traces}
 
 wuji:
+  scheduler:
+    db:
+      thread-cap: 20
+      queued-task-cap: 1000
+    chat-tail:
+      thread-cap: 16
+      queued-task-cap: 5000
+    kb-ingest:
+      thread-cap: 4
+      queued-task-cap: 100
+    llm-call:
+      thread-cap: 32
+      queued-task-cap: 500
   security:
     jwt:
       secret: ${WUJI_JWT_SECRET:change-me-wuji-assistant-jwt-secret-key-32b}
@@ -78,7 +97,6 @@ wuji:
     max-model-calls: 16
     system-prompt-code: agent.default.system
     user-prompt-code: agent.default.user
-    memory-window-size: 20
     checkpoint:
       type: postgres
       # 表由 schema/14_checkpoint.sql / Flyway V2 管理；true 仅用于空库且未跑迁移时
@@ -110,7 +128,23 @@ wuji:
       retry-backoff-max-ms: 60000
     tool-description-prompt-code: rag.knowledge_retrieval.system
     answer-prompt-code: rag.answer.system
+    domain-agent-prompt-code: rag.domain_agent.system
     prefetch-enabled: false
+    # 多库路由默认关闭。开启前在 kb_collection 写入各 collection 的说明。
+    router:
+      enabled: false
+      top-n: 2
+      min-score: 0.6
+    # 检索前查询改写默认关闭。失败或超时使用原问题。
+    query-rewrite:
+      enabled: false
+      max-queries: 3
+      timeout: 8s
+      system-prompt-code: rag.query_rewrite.system
+      user-prompt-code: rag.query_rewrite.user
+      relation-prompt-code: rag.relation.system
+    pgvector:
+      rrf-rank-constant: 60
     chunk-size: 500
     chunk-overlap: 80
     min-chunk-length-to-keep: 50
@@ -148,9 +182,15 @@ wuji:
   memory:
     short:
       max-message-count: 20
-      max-token: 8000
       compress-message-threshold: 30
       keep-recent-messages: 5
+      compress-token-threshold: 12000
+      summary-llm-enabled: true
+      summary-timeout: 20s
+      summary-sync-enabled: false
+      summary-sync-timeout: 5s
+      summary-system-prompt-code: memory.summary.system
+      summary-user-prompt-code: memory.summary.user
     router:
       mode: rule          # rule | hybrid（hybrid 失败降级 rule）
       timeout: 2s

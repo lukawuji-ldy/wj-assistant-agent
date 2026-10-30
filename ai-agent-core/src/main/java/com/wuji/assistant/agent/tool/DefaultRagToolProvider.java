@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 将 KnowledgeRetrievalTool 暴露给 AgentFactory；工具说明来自 prompt_template。
+ * 将 knowledge_search 暴露给 AgentFactory。工具说明来自 prompt_template，并附上已配置领域。
  *
  * @author liudy
  */
@@ -19,16 +19,16 @@ import java.util.Map;
 @ConditionalOnProperty(prefix = "wuji.rag", name = "as-tool", havingValue = "true", matchIfMissing = true)
 public class DefaultRagToolProvider implements RagToolProvider {
 
-    private final KnowledgeRetrievalToolFactory toolFactory;
     private final WujiRagProperties ragProperties;
     private final PromptTemplateService promptTemplateService;
+    private final DomainKnowledgeTool domainKnowledgeTool;
 
-    public DefaultRagToolProvider(KnowledgeRetrievalToolFactory toolFactory,
-                                  WujiRagProperties ragProperties,
-                                  PromptTemplateService promptTemplateService) {
-        this.toolFactory = toolFactory;
+    public DefaultRagToolProvider(WujiRagProperties ragProperties,
+                                  PromptTemplateService promptTemplateService,
+                                  DomainKnowledgeTool domainKnowledgeTool) {
         this.ragProperties = ragProperties;
         this.promptTemplateService = promptTemplateService;
+        this.domainKnowledgeTool = domainKnowledgeTool;
     }
 
     @Override
@@ -37,9 +37,6 @@ public class DefaultRagToolProvider implements RagToolProvider {
                 ragProperties.getToolDescriptionPromptCode(),
                 Map.of(),
                 KnowledgeRetrievalToolFactory.DEFAULT_DESCRIPTION);
-        return List.of(toolFactory.create(
-                ragProperties.getTopK(),
-                ragProperties.getEffectiveMinReliableScore(),
-                description));
+        return List.of(domainKnowledgeTool.callback(description));
     }
 }

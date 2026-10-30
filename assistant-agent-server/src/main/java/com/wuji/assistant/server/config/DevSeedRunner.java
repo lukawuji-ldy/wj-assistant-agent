@@ -140,7 +140,7 @@ public class DevSeedRunner implements ApplicationRunner {
         }
         jdbcTemplate.update("""
                 INSERT INTO llm_config
-                (id, config_id, name, provider, model_kind, base_url, api_key_cipher, model, temperature, max_tokens,
+                (id, config_id, name, provider, model_kind, base_url, api_key_cipher, model, temperature, output_max_tokens,
                  extra_json, status, create_time, update_time)
                 VALUES (?, ?, ?, ?, 'CHAT', ?, ?, ?, ?, ?, '{}'::jsonb, ?, ?, ?)
                 """,
@@ -158,7 +158,7 @@ public class DevSeedRunner implements ApplicationRunner {
         }
         jdbcTemplate.update("""
                 INSERT INTO llm_config
-                (id, config_id, name, provider, model_kind, base_url, api_key_cipher, model, temperature, max_tokens,
+                (id, config_id, name, provider, model_kind, base_url, api_key_cipher, model, temperature, output_max_tokens,
                  extra_json, status, create_time, update_time)
                 VALUES (?, ?, ?, ?, 'EMBEDDING', ?, ?, ?, NULL, NULL,
                         '{"dimensions":1536,"embeddings_path":"/v1/embeddings"}'::jsonb, ?, ?, ?)
@@ -187,6 +187,16 @@ public class DevSeedRunner implements ApplicationRunner {
                 RAG_KNOWLEDGE_RETRIEVAL_SYSTEM, now);
         upsertPrompt(21L, "rag.answer.system", "知识库回答系统提示词", "SYSTEM",
                 RAG_ANSWER_SYSTEM, now);
+        upsertPrompt(28L, "memory.summary.system", "会话摘要系统提示词", "SYSTEM",
+                MEMORY_SUMMARY_SYSTEM, now);
+        upsertPrompt(29L, "memory.summary.user", "会话摘要用户提示词", "USER",
+                MEMORY_SUMMARY_USER, now);
+        upsertPrompt(30L, "rag.query_rewrite.system", "知识库查询改写系统提示词", "SYSTEM",
+                RAG_QUERY_REWRITE_SYSTEM, now);
+        upsertPrompt(31L, "rag.query_rewrite.user", "知识库查询改写用户提示词", "USER",
+                RAG_QUERY_REWRITE_USER, now);
+        upsertPrompt(32L, "rag.relation.system", "知识库关系类回答提示词", "SYSTEM",
+                RAG_RELATION_SYSTEM, now);
     }
 
     /**
@@ -249,13 +259,43 @@ public class DevSeedRunner implements ApplicationRunner {
             """;
 
     private static final String RAG_KNOWLEDGE_RETRIEVAL_SYSTEM = """
-            从已入库知识库检索片段。制度/FAQ/人物经历/产品说明等凡可能被文档回答的问题都必须调用；不要因为问题不像企业制度就跳过。rejected=true 时禁止编造事实。
+            按领域检索知识库并返回结论。制度/FAQ/人物经历/产品说明等凡可能被文档回答的问题都必须调用 knowledge_search，传入 query 与 domain。domain 只能从下列领域中选择，不要传入 userId 或 collection。
             """;
 
     private static final String RAG_ANSWER_SYSTEM = """
-            凡用户问题可能被已入库文档回答（制度、FAQ、人物经历、产品说明等），必须先调用 knowledge_retrieval。
-            仅当工具返回 rejected=true 时，才能说「不在知识库范围内」；禁止仅凭「企业助手」身份、或仅根据其它文档主题（如 CRM）否定库中已有内容。
-            若上下文含「知识库已召回片段」，必须依据这些片段回答并标注来源，禁止再说不在知识库范围内。
+            凡用户问题可能被已入库文档回答（制度、FAQ、人物经历、产品说明等），必须先调用 knowledge_search(query, domain)。
+            仅当没有可用领域，或工具返回无法检索、无可靠命中时，才能说「不在知识库范围内」；禁止仅凭「企业助手」身份否定库中已有内容。
+            回答须依据工具返回的结论，禁止编造。
+            """;
+
+    private static final String MEMORY_SUMMARY_SYSTEM = """
+            你是会话摘要器。只输出 JSON，不要 markdown。
+            schema：{"goal":"","facts":[],"decisions":[],"pending_tasks":[]}
+            将旧摘要与待压缩消息滚动合并。保留目标、关键事实、已做决策、未完成任务；删除闲聊。
+            """;
+
+    private static final String MEMORY_SUMMARY_USER = """
+            旧摘要:
+            {{old_summary}}
+
+            待压缩消息:
+            {{messages}}
+            """;
+
+    private static final String RAG_QUERY_REWRITE_SYSTEM = """
+            你是检索查询改写器。只输出 JSON，不要 markdown。
+            schema：{"queries":["同义或更具体的检索问句"],"relational":false}
+            queries 给出 2 到 3 条，覆盖同义词和上位概念（例如车厘子与樱桃），不要回答问题本身。
+            若问题在问两个事物的关系、对比或区别，relational 设为 true。
+            """;
+
+    private static final String RAG_QUERY_REWRITE_USER = """
+            原问题:
+            {{query}}
+            """;
+
+    private static final String RAG_RELATION_SYSTEM = """
+            这是关系或对比类问题。请按「实体、关系、依据」三段回答，每段只使用已召回片段，不要补充知识库之外的事实。
             """;
 
     private static final String MEMORY_EXTRACT_SYSTEM = """

@@ -9,7 +9,7 @@
 - **聊天 API**：`POST /api/chat/stream`（SSE）与 `POST /api/chat`（同步 `ChatResult`）；请求体共用 `ChatStreamRequest`
 - **会话与鉴权**：登录、会话管理；身份以 JWT 为准，**禁止信任前端传入的 userId**
 - **Agent 编排**：`ModelRouter` + 有界 `ReactAgent`（CHAT 主备、工具轮次上限、PostgresSaver）
-- **能力装配**：长期记忆入模、`knowledge_retrieval`、可选 MCP 工具（`mcp_server_ref` / `mcp_tool_binding`）
+- **能力装配**：长期记忆入模、`knowledge_search`、可选 MCP 工具（`mcp_server_ref` / `mcp_tool_binding`）
 - **数据**：PostgreSQL + Flyway；LLM / Prompt 以库表为准
 - **可观测**：Micrometer Tracing + OTLP、`llm_call_log` 入模审计
 
@@ -24,3 +24,5 @@
 | 依赖 | `ai-agent-core`（进而 Memory / RAG / Common） |
 
 设计见 [docs/architecture.md](../docs/architecture.md)、[docs/agent-flow.md](../docs/agent-flow.md)。仓库总览见 [根 README](../README.md)。
+
+本地用 IDE **Debug** 启动（JVM 参数含 `jdwp`）时，`LocalDebugTimeoutEnvironmentPostProcessor` 把 `server.netty.idle-timeout` 和 `wuji.model.timeout` 覆盖为 `7d`，避免断点停久后连接或模型读超时。直接 Run、以及线上进程，仍是 `application.yml` 的 `10m` / `60s`。

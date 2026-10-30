@@ -33,6 +33,26 @@ class SummaryServiceTest {
     }
 
     @Test
+    void buildRollingSummary_prefersNewFactsWhenFull() throws Exception {
+        SummaryService svc = new SummaryService(null, null, new ObjectMapper());
+        java.util.List<String> oldFacts = new java.util.ArrayList<>();
+        for (int i = 0; i < 20; i++) {
+            oldFacts.add("old-" + i);
+        }
+        String old = new ObjectMapper().writeValueAsString(java.util.Map.of(
+                "goal", "g", "facts", oldFacts, "pending_tasks", java.util.List.of()));
+        ChatMessage message = new ChatMessage();
+        message.setRole("user");
+        message.setContent("brand-new-fact");
+        String json = svc.buildRollingSummary(old, java.util.List.of(message));
+        @SuppressWarnings("unchecked")
+        java.util.Map<String, Object> map = new ObjectMapper().readValue(json, java.util.Map.class);
+        String facts = String.valueOf(map.get("facts"));
+        assertTrue(facts.contains("brand-new-fact"));
+        assertFalse(facts.contains("old-0"));
+    }
+
+    @Test
     void buildRollingSummary_stripsNulBytes() throws Exception {
         SummaryService svc = new SummaryService(null, null, new ObjectMapper());
         ChatMessage m = new ChatMessage();

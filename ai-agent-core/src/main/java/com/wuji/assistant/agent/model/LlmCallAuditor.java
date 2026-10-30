@@ -52,8 +52,8 @@ public class LlmCallAuditor {
                     (id, call_id, trace_id, conversation_id, message_id, user_id, biz_source, biz_ref_id,
                      model_id, provider,
                      attempt, is_fallback, status, error_code, latency_ms, prompt_tokens, completion_tokens,
-                     request_json, response_json, create_time)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?)
+                     estimated_prompt_tokens, request_json, response_json, create_time)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?)
                     """,
                     IdGenerator.nextLong(),
                     IdGenerator.nextBizId("call_"),
@@ -72,6 +72,7 @@ public class LlmCallAuditor {
                     params.latencyMs(),
                     params.promptTokens(),
                     params.completionTokens(),
+                    params.estimatedPromptTokens(),
                     requestJson,
                     responseJson,
                     Timestamp.from(now.toInstant()));
@@ -129,7 +130,30 @@ public class LlmCallAuditor {
             Integer promptTokens,
             Integer completionTokens,
             Map<String, Object> request,
-            Map<String, Object> response
+            Map<String, Object> response,
+            Integer estimatedPromptTokens
     ) {
+        public AuditParams(
+                String traceId,
+                String conversationId,
+                String messageId,
+                String userId,
+                String bizSource,
+                String bizRefId,
+                String modelId,
+                String provider,
+                int attempt,
+                boolean fallback,
+                String status,
+                String errorCode,
+                Integer latencyMs,
+                Integer promptTokens,
+                Integer completionTokens,
+                Map<String, Object> request,
+                Map<String, Object> response) {
+            this(traceId, conversationId, messageId, userId, bizSource, bizRefId, modelId, provider,
+                    attempt, fallback, status, errorCode, latencyMs, promptTokens, completionTokens,
+                    request, response, null);
+        }
     }
 }

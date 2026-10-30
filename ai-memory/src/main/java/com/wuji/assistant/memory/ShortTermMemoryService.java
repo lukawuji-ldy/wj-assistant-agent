@@ -7,7 +7,6 @@ import com.wuji.assistant.memory.repo.ConversationRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -31,19 +30,18 @@ public class ShortTermMemoryService {
      * 兼容旧调用：仅返回消息窗口。
      */
     public List<ChatMessage> loadRecentMessages(String userId, String conversationId, int windowSize) {
-        return loadContext(userId, conversationId, windowSize, 8000).messages();
+        return loadContext(userId, conversationId, windowSize).messages();
     }
 
     /**
-     * 按 watermark + token 预算加载短期上下文。
+     * 按 watermark 与消息条数加载短期上下文。是否放得进模型由入模门按 {@code W - R} 决定。
      *
      * @param userId         用户
      * @param conversationId 会话
      * @param maxMessages    最大消息条数
-     * @param maxTokens      token 预算
      * @return 摘要 + 消息
      */
-    public ShortTermContext loadContext(String userId, String conversationId, int maxMessages, int maxTokens) {
+    public ShortTermContext loadContext(String userId, String conversationId, int maxMessages) {
         Conversation conversation = conversationRepository.requireOwned(userId, conversationId);
         int limit = Math.max(1, maxMessages);
         List<ChatMessage> window;
@@ -53,30 +51,7 @@ public class ShortTermMemoryService {
         } else {
             window = chatMessageRepository.listRecentAsc(conversationId, userId, limit);
         }
-        List<ChatMessage> trimmed = trimByTokenBudget(window, Math.max(1, maxTokens));
         String summary = StringUtils.hasText(conversation.getSummary()) ? conversation.getSummary() : null;
-        return new ShortTermContext(summary, trimmed);
-    }
-
-    /**
-     * 从新到旧累加 token，超预算则截断更旧消息。
-     */
-    static List<ChatMessage> trimByTokenBudget(List<ChatMessage> chronological, int maxTokens) {
-        if (chronological == null || chronological.isEmpty()) {
-            return List.of();
-        }
-        int total = 0;
-        int cutFrom = 0;
-        for (int i = chronological.size() - 1; i >= 0; i--) {
-            total += Math.max(0, chronological.get(i).getTokenCount());
-            if (total > maxTokens) {
-                cutFrom = i + 1;
-                break;
-            }
-        }
-        if (cutFrom <= 0) {
-            return List.copyOf(chronological);
-        }
-        return new ArrayList<>(chronological.subList(cutFrom, chronological.size()));
+        return new ShortTermContext(summary, window == null ? List.of() : List.copyOf(window));
     }
 }

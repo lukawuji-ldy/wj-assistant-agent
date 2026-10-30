@@ -34,10 +34,10 @@ class LlmCallAuditorTest {
         AtomicReference<String> responseJson = new AtomicReference<>();
         when(jdbcTemplate.update(anyString(), any(), any(), any(), any(), any(), any(), any(), any(),
                 any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
-                any(), any()))
+                any(), any(), any()))
                 .thenAnswer(inv -> {
-                    requestJson.set(inv.getArgument(18));
-                    responseJson.set(inv.getArgument(19));
+                    requestJson.set(inv.getArgument(19));
+                    responseJson.set(inv.getArgument(20));
                     return 1;
                 });
 

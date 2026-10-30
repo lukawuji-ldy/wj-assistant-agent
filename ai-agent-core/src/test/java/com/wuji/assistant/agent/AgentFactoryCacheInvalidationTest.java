@@ -47,7 +47,8 @@ class AgentFactoryCacheInvalidationTest {
                 checkpointSaverFactory,
                 builtinToolProvider,
                 ragToolProvider,
-                mcpToolProvider
+                mcpToolProvider,
+                null
         );
 
         ReactAgent a1 = factory.getOrCreate("configId");
@@ -84,7 +85,8 @@ class AgentFactoryCacheInvalidationTest {
                 checkpointSaverFactory,
                 builtinToolProvider,
                 ragToolProvider,
-                mcpToolProvider
+                mcpToolProvider,
+                null
         );
 
         ReactAgent a1 = factory.getOrCreate("configId");

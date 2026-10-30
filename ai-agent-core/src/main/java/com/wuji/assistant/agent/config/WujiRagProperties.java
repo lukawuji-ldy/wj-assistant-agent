@@ -2,6 +2,8 @@ package com.wuji.assistant.agent.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.time.Duration;
+
 /**
  * RAG 配置。
  *
@@ -23,8 +25,12 @@ public class WujiRagProperties {
     private String embeddingConfigId = "llm_embedding";
     private String toolDescriptionPromptCode = "rag.knowledge_retrieval.system";
     private String answerPromptCode = "rag.answer.system";
-    /** grounded 下先检索再拼 System，避免模型跳过 knowledge_retrieval */
+    /** 领域子 Agent 系统提示。库列表由代码拼接，不写进正文。 */
+    private String domainAgentPromptCode = "rag.domain_agent.system";
+    /** 保留绑定。聊天 prepare 不再预取知识库。 */
     private boolean prefetchEnabled = true;
+    private final Router router = new Router();
+    private final QueryRewrite queryRewrite = new QueryRewrite();
     private int chunkSize = 500;
     private int chunkOverlap = 80;
     private int minChunkLengthToKeep = 50;
@@ -136,12 +142,28 @@ public class WujiRagProperties {
         this.answerPromptCode = answerPromptCode;
     }
 
+    public String getDomainAgentPromptCode() {
+        return domainAgentPromptCode;
+    }
+
+    public void setDomainAgentPromptCode(String domainAgentPromptCode) {
+        this.domainAgentPromptCode = domainAgentPromptCode;
+    }
+
     public boolean isPrefetchEnabled() {
         return prefetchEnabled;
     }
 
     public void setPrefetchEnabled(boolean prefetchEnabled) {
         this.prefetchEnabled = prefetchEnabled;
+    }
+
+    public Router getRouter() {
+        return router;
+    }
+
+    public QueryRewrite getQueryRewrite() {
+        return queryRewrite;
     }
 
     public int getChunkSize() {
@@ -419,6 +441,101 @@ public class WujiRagProperties {
 
         public void setTrailingNoiseMarkers(java.util.List<String> trailingNoiseMarkers) {
             this.trailingNoiseMarkers = trailingNoiseMarkers;
+        }
+    }
+
+    /**
+     * 多知识库 Embedding 路由。默认关闭，未选中时仍全库检索。
+     */
+    public static class Router {
+
+        private boolean enabled = false;
+        private int topN = 2;
+        private double minScore = 0.6;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public int getTopN() {
+            return topN;
+        }
+
+        public void setTopN(int topN) {
+            this.topN = Math.max(1, topN);
+        }
+
+        public double getMinScore() {
+            return minScore;
+        }
+
+        public void setMinScore(double minScore) {
+            this.minScore = minScore;
+        }
+    }
+
+    /**
+     * 检索前把原问题改写成少量同义查询。失败时用原问题。
+     */
+    public static class QueryRewrite {
+
+        private boolean enabled = false;
+        private int maxQueries = 3;
+        private Duration timeout = Duration.ofSeconds(8);
+        private String systemPromptCode = "rag.query_rewrite.system";
+        private String userPromptCode = "rag.query_rewrite.user";
+        private String relationPromptCode = "rag.relation.system";
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public int getMaxQueries() {
+            return maxQueries;
+        }
+
+        public void setMaxQueries(int maxQueries) {
+            this.maxQueries = Math.max(1, maxQueries);
+        }
+
+        public Duration getTimeout() {
+            return timeout;
+        }
+
+        public void setTimeout(Duration timeout) {
+            this.timeout = timeout;
+        }
+
+        public String getSystemPromptCode() {
+            return systemPromptCode;
+        }
+
+        public void setSystemPromptCode(String systemPromptCode) {
+            this.systemPromptCode = systemPromptCode;
+        }
+
+        public String getUserPromptCode() {
+            return userPromptCode;
+        }
+
+        public void setUserPromptCode(String userPromptCode) {
+            this.userPromptCode = userPromptCode;
+        }
+
+        public String getRelationPromptCode() {
+            return relationPromptCode;
+        }
+
+        public void setRelationPromptCode(String relationPromptCode) {
+            this.relationPromptCode = relationPromptCode;
         }
     }
 }

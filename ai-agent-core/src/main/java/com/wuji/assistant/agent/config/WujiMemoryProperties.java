@@ -72,9 +72,15 @@ public class WujiMemoryProperties {
      */
     public static class ShortTerm {
         private int maxMessageCount = 20;
-        private int maxToken = 8000;
         private int compressMessageThreshold = 30;
         private int keepRecentMessages = 10;
+        private int compressTokenThreshold = 12000;
+        private boolean summaryLlmEnabled = true;
+        private Duration summaryTimeout = Duration.ofSeconds(20);
+        private boolean summarySyncEnabled = false;
+        private Duration summarySyncTimeout = Duration.ofSeconds(5);
+        private String summarySystemPromptCode = "memory.summary.system";
+        private String summaryUserPromptCode = "memory.summary.user";
 
         public int getMaxMessageCount() {
             return maxMessageCount;
@@ -82,14 +88,6 @@ public class WujiMemoryProperties {
 
         public void setMaxMessageCount(int maxMessageCount) {
             this.maxMessageCount = maxMessageCount;
-        }
-
-        public int getMaxToken() {
-            return maxToken;
-        }
-
-        public void setMaxToken(int maxToken) {
-            this.maxToken = maxToken;
         }
 
         public int getCompressMessageThreshold() {
@@ -106,6 +104,67 @@ public class WujiMemoryProperties {
 
         public void setKeepRecentMessages(int keepRecentMessages) {
             this.keepRecentMessages = keepRecentMessages;
+        }
+
+        public int getCompressTokenThreshold() {
+            return compressTokenThreshold;
+        }
+
+        public void setCompressTokenThreshold(int compressTokenThreshold) {
+            this.compressTokenThreshold = Math.max(0, compressTokenThreshold);
+        }
+
+        public boolean isSummaryLlmEnabled() {
+            return summaryLlmEnabled;
+        }
+
+        public void setSummaryLlmEnabled(boolean summaryLlmEnabled) {
+            this.summaryLlmEnabled = summaryLlmEnabled;
+        }
+
+        public Duration getSummaryTimeout() {
+            return summaryTimeout;
+        }
+
+        public void setSummaryTimeout(Duration summaryTimeout) {
+            this.summaryTimeout = summaryTimeout == null || summaryTimeout.isNegative()
+                    ? Duration.ofSeconds(20) : summaryTimeout;
+        }
+
+        public boolean isSummarySyncEnabled() {
+            return summarySyncEnabled;
+        }
+
+        public void setSummarySyncEnabled(boolean summarySyncEnabled) {
+            this.summarySyncEnabled = summarySyncEnabled;
+        }
+
+        public Duration getSummarySyncTimeout() {
+            return summarySyncTimeout;
+        }
+
+        public void setSummarySyncTimeout(Duration summarySyncTimeout) {
+            this.summarySyncTimeout = summarySyncTimeout == null || summarySyncTimeout.isNegative()
+                    || summarySyncTimeout.isZero()
+                    ? Duration.ofSeconds(5) : summarySyncTimeout;
+        }
+
+        public String getSummarySystemPromptCode() {
+            return summarySystemPromptCode;
+        }
+
+        public void setSummarySystemPromptCode(String summarySystemPromptCode) {
+            this.summarySystemPromptCode = summarySystemPromptCode == null || summarySystemPromptCode.isBlank()
+                    ? "memory.summary.system" : summarySystemPromptCode.trim();
+        }
+
+        public String getSummaryUserPromptCode() {
+            return summaryUserPromptCode;
+        }
+
+        public void setSummaryUserPromptCode(String summaryUserPromptCode) {
+            this.summaryUserPromptCode = summaryUserPromptCode == null || summaryUserPromptCode.isBlank()
+                    ? "memory.summary.user" : summaryUserPromptCode.trim();
         }
     }
 

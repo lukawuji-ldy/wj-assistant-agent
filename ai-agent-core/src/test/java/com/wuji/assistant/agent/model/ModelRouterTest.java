@@ -228,6 +228,33 @@ class ModelRouterTest {
     }
 
     @Test
+    void laterModelCalls_doNotWriteEstimatedTokens() {
+        modelProperties.getRetry().setMaxAttempts(2);
+        modelRouter = newRouter();
+        LlmConfigRecord primary = config("llm_primary", "p1");
+        when(llmClientFactory.getChatClient("llm_primary")).thenReturn(mock(ChatClient.class));
+        when(llmClientFactory.getConfig("llm_primary")).thenReturn(primary);
+
+        AtomicInteger hits = new AtomicInteger();
+        ModelRouter.AuditContext audit = new ModelRouter.AuditContext(
+                "t1", "c1", "m1", "u1", "CHAT", null, "sys", "user", 120);
+
+        modelRouter.execute(audit, routed -> {
+            if (hits.incrementAndGet() == 1) {
+                throw new WujiException(ErrorCode.MODEL_RATE_LIMITED, "429");
+            }
+            return "ok";
+        });
+
+        ArgumentCaptor<LlmCallAuditor.AuditParams> captor =
+                ArgumentCaptor.forClass(LlmCallAuditor.AuditParams.class);
+        verify(llmCallAuditor, atLeastOnce()).record(captor.capture());
+        assertEquals(2, captor.getAllValues().size());
+        assertEquals(120, captor.getAllValues().get(0).estimatedPromptTokens());
+        assertEquals(null, captor.getAllValues().get(1).estimatedPromptTokens());
+    }
+
+    @Test
     void swallowedAgentLlmNode429_thenFallbackSucceeds() {
         LlmConfigRecord primary = config("llm_primary", "p1");
         LlmConfigRecord backup = config("llm_backup_1", "p2");

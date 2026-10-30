@@ -8,26 +8,40 @@ import com.wuji.assistant.agent.config.WujiAgentProperties;
 import com.wuji.assistant.agent.config.WujiMemoryProperties;
 import com.wuji.assistant.agent.config.WujiModelProperties;
 import com.wuji.assistant.agent.config.WujiRagProperties;
+import com.wuji.assistant.agent.scheduler.SafeTaskScheduler;
 import com.wuji.assistant.agent.dto.ChatResult;
 import com.wuji.assistant.agent.dto.ChatStreamRequest;
 import com.wuji.assistant.agent.memory.LlmMemoryExtractOrchestrator;
+import com.wuji.assistant.agent.memory.LlmSummaryOrchestrator;
 import com.wuji.assistant.agent.model.LlmCallAuditor;
+import com.wuji.assistant.agent.model.LlmConfigRecord;
 import com.wuji.assistant.agent.model.ModelRouter;
 import com.wuji.assistant.agent.model.SwallowedLlmErrors;
 import com.wuji.assistant.agent.observability.AgentTelemetry;
 import com.wuji.assistant.agent.observability.ChatMdc;
 import com.wuji.assistant.agent.prompt.PromptTemplateService;
 import com.wuji.assistant.agent.prompt.WujiSystemPromptInterceptor;
-import com.wuji.assistant.agent.rag.RagContextBlock;
 import com.wuji.assistant.agent.stream.AgentStreamBridge;
+import com.wuji.assistant.agent.checkpoint.AgentCheckpointLink;
+import com.wuji.assistant.agent.stream.CheckpointGraphCaller;
 import com.wuji.assistant.agent.stream.StreamSession;
 import com.wuji.assistant.agent.stream.StreamSessionRegistry;
+import com.wuji.assistant.agent.token.CallBudget;
+import com.wuji.assistant.agent.token.CompressOnce;
+import com.wuji.assistant.agent.token.ContextDraft;
+import com.wuji.assistant.agent.token.ConversationTrimmer;
+import com.wuji.assistant.agent.token.FirstModelWindow;
+import com.wuji.assistant.agent.token.InputBudgetCalculator;
+import com.wuji.assistant.agent.token.TokenBudgetEnforcer;
+import com.wuji.assistant.agent.token.SystemPromptHolder;
+import com.wuji.assistant.agent.token.TokenCounter;
+import com.wuji.assistant.agent.token.TokenCounterRegistry;
+import com.wuji.assistant.agent.token.TurnRetrievalCache;
 import com.wuji.assistant.common.exception.ErrorCode;
 import com.wuji.assistant.common.exception.WujiException;
 import com.wuji.assistant.common.util.IdGenerator;
 import com.wuji.assistant.memory.ShortTermContext;
 import com.wuji.assistant.memory.ShortTermMemoryService;
-import com.wuji.assistant.memory.SummaryService;
 import com.wuji.assistant.memory.extract.ExplicitRememberDetector;
 import com.wuji.assistant.memory.extract.MemoryExtractService;
 import com.wuji.assistant.memory.model.ChatMessage;
@@ -35,27 +49,31 @@ import com.wuji.assistant.memory.model.Conversation;
 import com.wuji.assistant.memory.repo.ChatMessageRepository;
 import com.wuji.assistant.memory.repo.ConversationRepository;
 import com.wuji.assistant.memory.retrieve.LongTermMemoryRetriever;
+import com.wuji.assistant.memory.retrieve.MemoryItem;
 import com.wuji.assistant.memory.retrieve.MemoryRetrieveOptions;
-import com.wuji.assistant.rag.KnowledgeRetrievalService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
+import reactor.core.publisher.Sinks;
+import reactor.core.scheduler.Scheduler;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 /**
  * 聊天门面：短期记忆 + Prompt + ModelRouter + 有界 ReactAgent。
@@ -78,14 +96,21 @@ public class ChatFacade {
     private final WujiAgentProperties agentProperties;
     private final WujiMemoryProperties memoryProperties;
     private final WujiRagProperties ragProperties;
-    private final KnowledgeRetrievalService knowledgeRetrievalService;
     private final MemoryExtractService memoryExtractService;
     private final LlmMemoryExtractOrchestrator memoryExtractOrchestrator;
+    private final LlmSummaryOrchestrator summaryOrchestrator;
     private final LongTermMemoryRetriever longTermMemoryRetriever;
-    private final SummaryService summaryService;
     private final StreamSessionRegistry streamSessionRegistry;
     private final ObjectMapper objectMapper;
     private final AgentTelemetry agentTelemetry;
+    private final Scheduler chatTailScheduler;
+    private final Scheduler llmCallScheduler;
+    private final Scheduler dbScheduler;
+    private final InputBudgetCalculator inputBudgetCalculator;
+    private final ConversationTrimmer trimmer;
+
+    private static final String MEMORY_NOTE =
+            "（说明：句中「我」指当前登录用户，请依据上文「已知用户长期记忆」回答其偏好/画像，禁止当作询问助手自身。）\n";
 
     public ChatFacade(ConversationRepository conversationRepository,
                       ChatMessageRepository chatMessageRepository,
@@ -98,14 +123,16 @@ public class ChatFacade {
                       WujiAgentProperties agentProperties,
                       WujiMemoryProperties memoryProperties,
                       WujiRagProperties ragProperties,
-                      KnowledgeRetrievalService knowledgeRetrievalService,
                       MemoryExtractService memoryExtractService,
                       LlmMemoryExtractOrchestrator memoryExtractOrchestrator,
+                      LlmSummaryOrchestrator summaryOrchestrator,
                       LongTermMemoryRetriever longTermMemoryRetriever,
-                      SummaryService summaryService,
                       StreamSessionRegistry streamSessionRegistry,
                       ObjectMapper objectMapper,
-                      AgentTelemetry agentTelemetry) {
+                      AgentTelemetry agentTelemetry,
+                      @Qualifier("chatTailScheduler") Scheduler chatTailScheduler,
+                      @Qualifier("llmCallScheduler") Scheduler llmCallScheduler,
+                      @Qualifier("dbScheduler") Scheduler dbScheduler) {
         this.conversationRepository = conversationRepository;
         this.chatMessageRepository = chatMessageRepository;
         this.shortTermMemoryService = shortTermMemoryService;
@@ -117,14 +144,18 @@ public class ChatFacade {
         this.agentProperties = agentProperties;
         this.memoryProperties = memoryProperties;
         this.ragProperties = ragProperties;
-        this.knowledgeRetrievalService = knowledgeRetrievalService;
         this.memoryExtractService = memoryExtractService;
         this.memoryExtractOrchestrator = memoryExtractOrchestrator;
+        this.summaryOrchestrator = summaryOrchestrator;
         this.longTermMemoryRetriever = longTermMemoryRetriever;
-        this.summaryService = summaryService;
         this.streamSessionRegistry = streamSessionRegistry;
         this.objectMapper = objectMapper;
         this.agentTelemetry = agentTelemetry;
+        this.inputBudgetCalculator = new InputBudgetCalculator();
+        this.trimmer = new ConversationTrimmer();
+        this.chatTailScheduler = chatTailScheduler;
+        this.llmCallScheduler = llmCallScheduler;
+        this.dbScheduler = dbScheduler;
     }
 
     /**
@@ -142,7 +173,7 @@ public class ChatFacade {
             return Flux.just(emitStandaloneError(ErrorCode.BAD_REQUEST.getCode(), "message 不能为空", false));
         }
         return Mono.fromCallable(() -> prepare(userId, request, "STREAMING"))
-                .subscribeOn(Schedulers.boundedElastic())
+                .subscribeOn(llmCallScheduler)
                 .flatMapMany(this::runStream)
                 .onErrorResume(ex -> {
                     Throwable mapped = mapAgentError(ex);
@@ -154,7 +185,7 @@ public class ChatFacade {
     }
 
     /**
-     * 非流式对话：同步拿到完整回复后返回（阻塞调用在 boundedElastic 执行）。
+     * 非流式对话：在 {@code llmCallScheduler} 上拿到完整回复。取消订阅不打断工作线程。
      *
      * @param userId  来自 JWT 的用户
      * @param request 请求体（与流式相同）
@@ -164,8 +195,8 @@ public class ChatFacade {
         if (request == null || !StringUtils.hasText(request.message())) {
             return Mono.error(new WujiException(ErrorCode.BAD_REQUEST, "message 不能为空"));
         }
-        // 禁止 subscribeOn(boundedElastic)：cancel 会 interrupt，JDK HttpClient 报 Request was interrupted
-        return DetachedBlockingMono.fromCallable(() -> doChat(userId, request));
+        // 禁止 subscribeOn：cancel 会 interrupt，JDK HttpClient 报 Request was interrupted
+        return DetachedBlockingMono.fromCallable(llmCallScheduler, () -> doChat(userId, request));
     }
 
     private Flux<ServerSentEvent<String>> resumeStream(String userId, ChatStreamRequest request) {
@@ -193,46 +224,18 @@ public class ChatFacade {
     }
 
     private ChatResult doChatInternal(StreamContext ctx) {
-        ModelRouter.AuditContext audit = new ModelRouter.AuditContext(
-                ctx.traceId(),
-                ctx.conversation().getConversationId(),
-                ctx.assistantMsg().getMessageId(),
-                ctx.userId(),
-                "CHAT",
-                null,
-                ctx.systemPrompt(),
-                ctx.userPrompt()
-        );
-        RunnableConfig runnableConfig = runnableConfig(ctx);
         try {
-            ModelRouter.RoutedResult<String> routed = modelRouter.execute(audit, client -> {
-                try {
-                    ReactAgent agent = agentFactory.getOrCreate(client.configId());
-                    AssistantMessage reply = agent.call(ctx.messages(), runnableConfig);
-                    String text = reply == null || reply.getText() == null ? "" : reply.getText();
-                    RuntimeException swallowed = SwallowedLlmErrors.toException(text);
-                    if (swallowed != null) {
-                        throw swallowed;
-                    }
-                    return text;
-                } catch (Exception ex) {
-                    throw AgentFactory.mapLimitException(ex);
-                }
-            });
-            String full = routed.value() == null ? "" : routed.value();
-            chatMessageRepository.updateContentAndStatus(
-                    ctx.assistantMsg().getMessageId(), full, "COMPLETED");
-            triggerExtract(ctx, full);
-            triggerCompress(ctx);
-            return new ChatResult(
-                    ctx.conversation().getConversationId(),
-                    ctx.assistantMsg().getMessageId(),
-                    ctx.userMsg().getMessageId(),
-                    ctx.traceId(),
-                    full,
-                    routed.configId()
-            );
+            return finishChat(ctx);
         } catch (Exception ex) {
+            if (ctx.repackForContextLength(ex)) {
+                log.warn("context length exceeded, retry once messageId={}",
+                        ctx.assistantMsg().getMessageId());
+                try {
+                    return finishChat(ctx);
+                } catch (Exception retryEx) {
+                    ex = retryEx;
+                }
+            }
             // RestClient/Reactor 在取消时会置 interrupt；先清掉以便落库并返回 JSON，避免前端收到纯文本 Internal Server Error
             Thread.interrupted();
             chatMessageRepository.updateContentAndStatus(
@@ -246,9 +249,58 @@ public class ChatFacade {
         }
     }
 
+    private ChatResult finishChat(StreamContext ctx) {
+        ModelRouter.AuditContext audit = new ModelRouter.AuditContext(
+                ctx.traceId(),
+                ctx.conversation().getConversationId(),
+                ctx.assistantMsg().getMessageId(),
+                ctx.userId(),
+                "CHAT",
+                null,
+                ctx.systemPrompt(),
+                ctx.userPrompt(),
+                ctx::systemPrompt,
+                ctx::claimEstimate
+        );
+        RunnableConfig runnableConfig = runnableConfig(ctx);
+        ModelRouter.RoutedResult<String> routed = modelRouter.execute(audit, client -> {
+            try {
+                ReactAgent agent = agentFactory.getOrCreate(client.configId());
+                if (!client.configId().equals(ctx.configId())) {
+                    ctx.repack(client.config());
+                }
+                AssistantMessage reply = CheckpointGraphCaller.invoke(
+                        agent, ctx.messages(), ctx.userPrompt(), runnableConfig);
+                String text = reply == null || reply.getText() == null ? "" : reply.getText();
+                RuntimeException swallowed = SwallowedLlmErrors.toException(text);
+                if (swallowed != null) {
+                    throw swallowed;
+                }
+                return text;
+            } catch (Exception ex) {
+                throw AgentFactory.mapLimitException(ex);
+            }
+        });
+        String full = routed.value() == null ? "" : routed.value();
+        chatMessageRepository.updateContentAndStatus(
+                ctx.assistantMsg().getMessageId(), full, "COMPLETED", routed.configId());
+        triggerExtract(ctx, full);
+        triggerCompress(ctx);
+        return new ChatResult(
+                ctx.conversation().getConversationId(),
+                ctx.assistantMsg().getMessageId(),
+                ctx.userMsg().getMessageId(),
+                ctx.traceId(),
+                full,
+                routed.configId(),
+                ctx.truncationInfo().isEmpty() ? null : ctx.truncationInfo()
+        );
+    }
+
     private StreamContext prepare(String userId, ChatStreamRequest request, String assistantStatus) {
-        modelRouter.openFrom(0).orElseThrow(() ->
+        ModelRouter.IndexedClient opened = modelRouter.openFrom(0).orElseThrow(() ->
                 new WujiException(ErrorCode.MODEL_UNAVAILABLE, "无可用 LLM 配置"));
+        LlmConfigRecord config = opened.client().config();
 
         Conversation conversation;
         if (StringUtils.hasText(request.conversationId())) {
@@ -257,14 +309,9 @@ public class ChatFacade {
             conversation = conversationRepository.create(userId, null);
         }
 
-        int maxMessages = memoryProperties.getShort() != null
-                ? memoryProperties.getShort().getMaxMessageCount()
-                : agentProperties.getMemoryWindowSize();
-        int maxTokens = memoryProperties.getShort() != null
-                ? memoryProperties.getShort().getMaxToken()
-                : 8000;
+        int maxMessages = memoryProperties.getShort().getMaxMessageCount();
         ShortTermContext shortTerm = shortTermMemoryService.loadContext(
-                userId, conversation.getConversationId(), maxMessages, maxTokens);
+                userId, conversation.getConversationId(), maxMessages);
         List<ChatMessage> history = shortTerm.messages();
 
         ChatMessage userMsg = chatMessageRepository.insert(
@@ -286,65 +333,38 @@ public class ChatFacade {
                 conversation.getConversationId(), userId, "assistant", "", assistantStatus);
         conversationRepository.bumpMessageCount(conversation.getConversationId(), 1);
 
-        String systemPrompt = promptTemplateService.loadAndRender(
-                agentProperties.getSystemPromptCode(),
-                Map.of(),
-                "你是企业智能助手，回答需准确。");
-        String ragAnswerPrompt = promptTemplateService.loadAndRender(
-                ragProperties.getAnswerPromptCode(),
-                Map.of(),
-                "");
-        if (StringUtils.hasText(ragAnswerPrompt)) {
-            systemPrompt = systemPrompt + "\n\n" + ragAnswerPrompt.trim();
+        Mono<PromptParts> promptMono = Mono.fromCallable(() -> loadPromptParts(request.message()))
+                .subscribeOn(dbScheduler);
+        Mono<List<MemoryItem>> memoryMono = Mono.fromCallable(() -> loadMemoryItems(userId, request.message()))
+                .subscribeOn(dbScheduler);
+        var loaded = Mono.zip(promptMono, memoryMono).block();
+        if (loaded == null) {
+            throw new WujiException(ErrorCode.INTERNAL_ERROR, "上下文装载失败");
         }
-        systemPrompt = appendRagPrefetch(systemPrompt, request.message());
-        String userPrompt = promptTemplateService.loadAndRender(
-                agentProperties.getUserPromptCode(),
-                Map.of("message", request.message()),
-                request.message());
-
-        WujiMemoryProperties.Retrieve retrieveCfg = memoryProperties.getRetrieve() == null
-                ? new WujiMemoryProperties.Retrieve()
-                : memoryProperties.getRetrieve();
-        MemoryRetrieveOptions retrieveOptions = new MemoryRetrieveOptions(
-                retrieveCfg.getTopK(),
-                retrieveCfg.getWeightSimilarity(),
-                retrieveCfg.getWeightConfidence(),
-                retrieveCfg.getWeightFreshness(),
-                retrieveCfg.getWeightImportance(),
-                retrieveCfg.isSemanticEnabled(),
-                retrieveCfg.getSemanticTopK(),
-                retrieveCfg.getSemanticMinScore());
-        String longTermBlock = longTermMemoryRetriever.retrieveBlock(
-                userId, request.message(), retrieveOptions);
-        // 合并进主 system（经 RunnableConfig metadata 注入，禁止再塞进 messages 以免 Append 累积）
-        if (StringUtils.hasText(longTermBlock)) {
-            systemPrompt = systemPrompt + "\n\n" + longTermBlock;
-            userPrompt = "（说明：句中「我」指当前登录用户，请依据上文「已知用户长期记忆」回答其偏好/画像，禁止当作询问助手自身。）\n"
-                    + userPrompt;
-            log.info("memory inject into system, userId={}, chars={}", userId, longTermBlock.length());
-        }
-        if (StringUtils.hasText(shortTerm.summaryJson())) {
-            systemPrompt = systemPrompt + "\n\n会话摘要（watermark 覆盖范围）:\n" + shortTerm.summaryJson();
+        PromptParts prompts = loaded.getT1();
+        List<MemoryItem> memoryItems = loaded.getT2() == null ? List.of() : loaded.getT2();
+        UserParts userParts = splitUser(prompts.userPrompt(), request.message());
+        if (!memoryItems.isEmpty()) {
+            userParts = new UserParts(MEMORY_NOTE + userParts.prefix(), userParts.raw(), userParts.suffix());
+            log.info("memory inject into system, userId={}, items={}", userId, memoryItems.size());
         }
 
-        // 仅 user/assistant 进入 ReactAgent messages；system 走 metadata → WujiSystemPromptInterceptor
-        List<Message> messages = new ArrayList<>();
-        for (ChatMessage m : history) {
-            if ("user".equalsIgnoreCase(m.getRole())) {
-                messages.add(new UserMessage(m.getContent()));
-            } else if ("assistant".equalsIgnoreCase(m.getRole())) {
-                messages.add(new AssistantMessage(m.getContent() == null ? "" : m.getContent()));
-            }
-        }
-        messages.add(new UserMessage(userPrompt));
+        ContextDraft draft = new ContextDraft(
+                prompts.systemPrompt(),
+                userParts.prefix(),
+                userParts.raw(),
+                userParts.suffix(),
+                shortTerm.summaryJson(),
+                memoryItems,
+                toDialogue(history));
+        ConversationTrimmer.TrimmedRequest rendered = trimmer.assemble(draft);
 
         String streamId = IdGenerator.nextBizId("s_");
         String traceId = IdGenerator.nextBizId("t_");
         StreamSession session = streamSessionRegistry.register(streamId, userId);
 
         return new StreamContext(userId, conversation, userMsg, assistantPlaceholder,
-                messages, streamId, traceId, systemPrompt, userPrompt, session);
+                streamId, traceId, session, config, draft, rendered, new CompressOnce(), new FirstModelWindow());
     }
 
     private Flux<ServerSentEvent<String>> runStream(StreamContext ctx) {
@@ -353,28 +373,38 @@ public class ChatFacade {
         long start = System.currentTimeMillis();
         StreamSession session = ctx.session();
 
-        ServerSentEvent<String> meta = emit(session, "meta", Map.of(
-                "conversationId", ctx.conversation().getConversationId(),
-                "messageId", ctx.assistantMsg().getMessageId(),
-                "userMessageId", ctx.userMsg().getMessageId(),
-                "traceId", ctx.traceId(),
-                "streamId", ctx.streamId()
-        ));
+        Map<String, Object> metaData = new LinkedHashMap<>();
+        metaData.put("conversationId", ctx.conversation().getConversationId());
+        metaData.put("messageId", ctx.assistantMsg().getMessageId());
+        metaData.put("userMessageId", ctx.userMsg().getMessageId());
+        metaData.put("traceId", ctx.traceId());
+        metaData.put("streamId", ctx.streamId());
+        ServerSentEvent<String> meta = emit(session, "meta", metaData);
 
         Flux<ServerSentEvent<String>> llmPart = streamWithFailover(ctx, 0, contentBuf, start, session);
         Flux<ServerSentEvent<String>> main = Flux.concat(Flux.just(meta), llmPart);
+        return withHeartbeat(main, agentProperties.getStream().getHeartbeatInterval(),
+                        () -> emit(session, "ping", Map.of("ts", System.currentTimeMillis())))
+                .doOnComplete(session::touch)
+                .doFinally(sig -> ChatMdc.clear());
+    }
 
-        Duration heartbeat = agentProperties.getStream().getHeartbeatInterval();
-        Flux<ServerSentEvent<String>> result;
+    /**
+     * 心跳只旁路订阅。{@code main.then()} 会把冷流再订一次，模型会跑两遍且流不结束。
+     */
+    static Flux<ServerSentEvent<String>> withHeartbeat(Flux<ServerSentEvent<String>> main,
+                                                       Duration heartbeat,
+                                                       Supplier<ServerSentEvent<String>> ping) {
         if (heartbeat == null || heartbeat.isZero() || heartbeat.isNegative()) {
-            result = main.doOnComplete(session::touch);
-        } else {
-            Flux<ServerSentEvent<String>> pings = Flux.interval(heartbeat)
-                    .map(tick -> emit(session, "ping", Map.of("ts", System.currentTimeMillis())))
-                    .takeUntilOther(main.then());
-            result = Flux.merge(main, pings).doOnComplete(session::touch);
+            return main;
         }
-        return result.doFinally(sig -> ChatMdc.clear());
+        return Flux.defer(() -> {
+            Sinks.One<Boolean> stop = Sinks.one();
+            Flux<ServerSentEvent<String>> pings = Flux.interval(heartbeat)
+                    .map(tick -> ping.get())
+                    .takeUntilOther(stop.asMono());
+            return main.doFinally(sig -> stop.tryEmitValue(Boolean.TRUE)).mergeWith(pings);
+        });
     }
 
     private Flux<ServerSentEvent<String>> streamWithFailover(StreamContext ctx,
@@ -393,7 +423,7 @@ public class ChatFacade {
                         "retryable", true,
                         "streamId", ctx.streamId()
                 ));
-            }).subscribeOn(Schedulers.boundedElastic()).flux();
+            }).subscribeOn(chatTailScheduler).flux();
         }
         return attemptStream(ctx, opened.get(), 1, contentBuf, start, session);
     }
@@ -411,11 +441,15 @@ public class ChatFacade {
                 ? Duration.ofSeconds(1) : modelProperties.getRetry().getBackoff();
 
         ReactAgent agent = agentFactory.getOrCreate(routed.configId());
+        if (!routed.configId().equals(ctx.configId())) {
+            ctx.repack(routed.config());
+        }
         RunnableConfig runnableConfig = runnableConfig(ctx);
 
         Flux<ServerSentEvent<String>> deltas;
         try {
-            deltas = AgentStreamBridge.toContentDeltas(agent.streamMessages(ctx.messages(), runnableConfig))
+            deltas = AgentStreamBridge.toContentDeltas(CheckpointGraphCaller.stream(
+                            agent, ctx.messages(), ctx.userPrompt(), runnableConfig))
                     .map(chunk -> {
                         deltaSent.set(true);
                         contentBuf.get().append(chunk);
@@ -429,7 +463,7 @@ public class ChatFacade {
         Flux<ServerSentEvent<String>> tail = Mono.fromCallable(() -> {
                     String full = contentBuf.get().toString();
                     chatMessageRepository.updateContentAndStatus(
-                            ctx.assistantMsg().getMessageId(), full, "COMPLETED");
+                            ctx.assistantMsg().getMessageId(), full, "COMPLETED", routed.configId());
                     triggerExtract(ctx, full);
                     triggerCompress(ctx);
                     long latency = System.currentTimeMillis() - start;
@@ -454,14 +488,19 @@ public class ChatFacade {
                                     "user", ctx.userPrompt(),
                                     "model", routed.config().getModel()
                             ),
-                            Map.of("content", full)
+                            Map.of("content", full),
+                            ctx.claimEstimate()
                     ));
-                    return emit(session, "done", Map.of(
-                            "finishReason", "stop",
-                            "modelId", routed.configId()
-                    ));
+                    Map<String, Object> done = new LinkedHashMap<>();
+                    done.put("finishReason", "stop");
+                    done.put("modelId", routed.configId());
+                    Map<String, Object> truncation = ctx.truncationInfo();
+                    if (truncation != null && Boolean.TRUE.equals(truncation.get("truncated"))) {
+                        done.put("truncation_info", truncation);
+                    }
+                    return emit(session, "done", done);
                 })
-                .subscribeOn(Schedulers.boundedElastic())
+                .subscribeOn(chatTailScheduler)
                 .flux();
 
         return Flux.concat(deltas, tail)
@@ -477,7 +516,7 @@ public class ChatFacade {
                                      AtomicReference<StringBuilder> contentBuf,
                                      StreamSession session,
                                      String modelConfigId) {
-        Schedulers.boundedElastic().schedule(() -> {
+        SafeTaskScheduler.submit(chatTailScheduler, () -> {
             try {
                 String full = contentBuf.get().toString();
                 if (full == null) {
@@ -485,8 +524,8 @@ public class ChatFacade {
                 }
                 chatMessageRepository.updateContentAndStatus(
                         ctx.assistantMsg().getMessageId(), full,
-                        full.isBlank() ? "CANCELLED" : "COMPLETED");
-                // 若缓冲尚无终端事件，补一条 done 供 resume 重放
+                        full.isBlank() ? "CANCELLED" : "COMPLETED",
+                        modelConfigId);
                 boolean hasTerminal = session.replayAfter(0L).stream()
                         .anyMatch(e -> "done".equals(e.event()) || "error".equals(e.event()));
                 if (!hasTerminal) {
@@ -496,9 +535,8 @@ public class ChatFacade {
                     ));
                 }
             } catch (Exception ignored) {
-                // 断开路径不阻断
             }
-        });
+        }, "disconnect:" + ctx.streamId(), Duration.ofMinutes(5));
     }
 
     private Flux<ServerSentEvent<String>> handleStreamError(StreamContext ctx,
@@ -536,8 +574,15 @@ public class ChatFacade {
                 null,
                 null,
                 Map.of("system", ctx.systemPrompt(), "user", ctx.userPrompt()),
-                Map.of("error", msg)
-        ))).subscribeOn(Schedulers.boundedElastic()).then();
+                Map.of("error", msg),
+                ctx.claimEstimate()
+        ))).subscribeOn(chatTailScheduler).then();
+
+        if (!deltaSent && ctx.repackForContextLength(ex)) {
+            log.warn("context length exceeded, retry once messageId={}",
+                    ctx.assistantMsg().getMessageId());
+            return auditFail.thenMany(attemptStream(ctx, indexed, attempt, contentBuf, start, session));
+        }
 
         if (!deltaSent && mapped != ErrorCode.AGENT_MAX_ITERATIONS && modelRouter.isRetryable(ex)) {
             if (attempt < maxAttempts) {
@@ -558,14 +603,15 @@ public class ChatFacade {
             chatMessageRepository.updateContentAndStatus(
                     ctx.assistantMsg().getMessageId(),
                     contentBuf.get().toString(),
-                    "CANCELLED");
+                    "CANCELLED",
+                    routed.configId());
             return emit(session, "error", Map.of(
                     "code", errCode,
                     "message", msg,
                     "retryable", finalRetryable,
                     "streamId", ctx.streamId()
             ));
-        }).subscribeOn(Schedulers.boundedElastic()).flux());
+        }).subscribeOn(chatTailScheduler).flux());
     }
 
     private void triggerExtract(StreamContext ctx, String assistantText) {
@@ -579,50 +625,121 @@ public class ChatFacade {
                 ctx.userPrompt(),
                 assistantText);
         if (memoryProperties.getExtract().isAsync()) {
-            Schedulers.boundedElastic().schedule(task);
+            SafeTaskScheduler.submit(llmCallScheduler, task,
+                    "extract:" + ctx.assistantMsg().getMessageId(),
+                    memoryProperties.getExtract().getTimeout());
         } else {
             task.run();
         }
     }
 
     private void triggerCompress(StreamContext ctx) {
-        if (memoryProperties.getShort() == null) {
-            return;
-        }
-        int threshold = memoryProperties.getShort().getCompressMessageThreshold();
-        int keep = memoryProperties.getShort().getKeepRecentMessages();
-        Runnable task = () -> summaryService.compressIfNeeded(
-                ctx.userId(), ctx.conversation().getConversationId(), threshold, keep);
-        Schedulers.boundedElastic().schedule(task);
+        int tokenThreshold = memoryProperties.getShort().getCompressTokenThreshold();
+        Runnable task = () -> summaryOrchestrator.compress(
+                ctx.userId(), ctx.conversation().getConversationId(), tokenThreshold);
+        SafeTaskScheduler.submit(llmCallScheduler, task,
+                "compress:" + ctx.conversation().getConversationId(),
+                Duration.ofMinutes(5));
     }
 
-    private String appendRagPrefetch(String systemPrompt, String userMessage) {
-        if (!ragProperties.isPrefetchEnabled() || knowledgeRetrievalService == null) {
-            return systemPrompt;
-        }
-        try {
-            var result = knowledgeRetrievalService.retrieve(
-                    userMessage,
-                    ragProperties.getTopK(),
-                    ragProperties.getEffectiveMinReliableScore());
-            String block = RagContextBlock.format(result);
-            if (!StringUtils.hasText(block)) {
-                return systemPrompt;
+    private static UserParts splitUser(String rendered, String rawMessage) {
+        String raw = rawMessage == null ? "" : rawMessage;
+        String prompt = rendered == null ? "" : rendered;
+        if (!raw.isEmpty()) {
+            int at = prompt.indexOf(raw);
+            if (at >= 0) {
+                return new UserParts(prompt.substring(0, at), raw, prompt.substring(at + raw.length()));
             }
-            int hitCount = result.hits() == null ? 0 : result.hits().size();
-            log.info("rag prefetch rejected={} hits={}", result.rejected(), hitCount);
-            return systemPrompt + "\n\n" + block;
-        } catch (Exception e) {
-            log.warn("rag prefetch failed: {}", e.toString());
-            return systemPrompt;
         }
+        return new UserParts(prompt, raw.isEmpty() ? prompt : "", "");
     }
 
-    private static RunnableConfig runnableConfig(StreamContext ctx) {
-        // Checkpoint thread = userId:conversationId；system 经 metadata 注入，避免 Append 累积 SystemMessage
+    private PromptParts loadPromptParts(String message) {
+        String systemPrompt = promptTemplateService.loadAndRender(
+                agentProperties.getSystemPromptCode(),
+                Map.of(),
+                "你是企业智能助手，回答需准确。");
+        String ragAnswerPrompt = promptTemplateService.loadAndRender(
+                ragProperties.getAnswerPromptCode(),
+                Map.of(),
+                "");
+        if (StringUtils.hasText(ragAnswerPrompt)) {
+            systemPrompt = systemPrompt + "\n\n" + ragAnswerPrompt.trim();
+        }
+        String userPrompt = promptTemplateService.loadAndRender(
+                agentProperties.getUserPromptCode(),
+                Map.of("message", message == null ? "" : message),
+                message == null ? "" : message);
+        return new PromptParts(systemPrompt, userPrompt);
+    }
+
+    private List<MemoryItem> loadMemoryItems(String userId, String message) {
+        WujiMemoryProperties.Retrieve retrieveCfg = memoryProperties.getRetrieve() == null
+                ? new WujiMemoryProperties.Retrieve()
+                : memoryProperties.getRetrieve();
+        MemoryRetrieveOptions retrieveOptions = new MemoryRetrieveOptions(
+                retrieveCfg.getTopK(),
+                retrieveCfg.getWeightSimilarity(),
+                retrieveCfg.getWeightConfidence(),
+                retrieveCfg.getWeightFreshness(),
+                retrieveCfg.getWeightImportance(),
+                retrieveCfg.isSemanticEnabled(),
+                retrieveCfg.getSemanticTopK(),
+                retrieveCfg.getSemanticMinScore());
+        List<MemoryItem> items = longTermMemoryRetriever.retrieveItems(userId, message, retrieveOptions);
+        return items == null ? List.of() : items;
+    }
+
+    private static List<Message> toDialogue(List<ChatMessage> history) {
+        List<Message> messages = new ArrayList<>();
+        if (history == null) {
+            return messages;
+        }
+        for (ChatMessage m : history) {
+            if (m == null || m.getRole() == null) {
+                continue;
+            }
+            if ("user".equalsIgnoreCase(m.getRole())) {
+                messages.add(new UserMessage(m.getContent() == null ? "" : m.getContent()));
+            } else if ("assistant".equalsIgnoreCase(m.getRole())) {
+                messages.add(new AssistantMessage(m.getContent() == null ? "" : m.getContent()));
+            }
+        }
+        return messages;
+    }
+
+    static boolean isContextLengthExceeded(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            String message = current.getMessage();
+            if (message != null) {
+                String lower = message.toLowerCase();
+                if (lower.contains("context_length_exceeded")
+                        || lower.contains("context_length")
+                        || lower.contains("maximum context length")
+                        || lower.contains("context length")) {
+                    return true;
+                }
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private RunnableConfig runnableConfig(StreamContext ctx) {
         return RunnableConfig.builder()
                 .threadId(ctx.userId() + ":" + ctx.conversation().getConversationId())
-                .addMetadata(WujiSystemPromptInterceptor.META_SYSTEM_PROMPT, ctx.systemPrompt())
+                .addMetadata(AgentCheckpointLink.PARENT_THREAD_KEY,
+                        ctx.userId() + ":" + ctx.conversation().getConversationId())
+                .addMetadata(WujiSystemPromptInterceptor.META_SYSTEM_PROMPT, ctx.promptHolder())
+                .addMetadata(CallBudget.META_KEY, ctx.callBudget())
+                .addMetadata(TurnRetrievalCache.META_KEY, ctx.retrievalCache())
+                .addMetadata(CompressOnce.META_KEY, ctx.compressOnce())
+                .addMetadata(FirstModelWindow.META_KEY, ctx.firstWindow())
+                .addMetadata(TokenBudgetEnforcer.USER_ID, ctx.userId())
+                .addMetadata(TokenBudgetEnforcer.CONVERSATION_ID, ctx.conversation().getConversationId())
+                .addMetadata(TokenBudgetEnforcer.USER_MESSAGE_ID, ctx.userMsg().getMessageId())
+                .addMetadata(TokenBudgetEnforcer.ASSISTANT_MESSAGE_ID, ctx.assistantMsg().getMessageId())
                 .build();
     }
 
@@ -654,17 +771,191 @@ public class ChatFacade {
         }
     }
 
-    private record StreamContext(
-            String userId,
-            Conversation conversation,
-            ChatMessage userMsg,
-            ChatMessage assistantMsg,
-            List<Message> messages,
-            String streamId,
-            String traceId,
-            String systemPrompt,
-            String userPrompt,
-            StreamSession session
-    ) {
+    private record PromptParts(String systemPrompt, String userPrompt) {
+    }
+
+    private record UserParts(String prefix, String raw, String suffix) {
+    }
+
+    private final class StreamContext {
+        private final String userId;
+        private final Conversation conversation;
+        private final ChatMessage userMsg;
+        private final ChatMessage assistantMsg;
+        private final String streamId;
+        private final String traceId;
+        private final StreamSession session;
+        private LlmConfigRecord config;
+        private ContextDraft draft;
+        private String systemPrompt;
+        private String userPrompt;
+        private List<Message> messages;
+        private final SystemPromptHolder promptHolder = new SystemPromptHolder();
+        private final TurnRetrievalCache retrievalCache = new TurnRetrievalCache();
+        private final CompressOnce compressOnce;
+        private final FirstModelWindow firstWindow;
+        private CallBudget callBudget;
+        private final AtomicBoolean estimateClaimed = new AtomicBoolean(false);
+        private boolean contextLengthRetried;
+
+        private StreamContext(String userId,
+                              Conversation conversation,
+                              ChatMessage userMsg,
+                              ChatMessage assistantMsg,
+                              String streamId,
+                              String traceId,
+                              StreamSession session,
+                              LlmConfigRecord config,
+                              ContextDraft draft,
+                              ConversationTrimmer.TrimmedRequest packed,
+                              CompressOnce compressOnce,
+                              FirstModelWindow firstWindow) {
+            this.userId = userId;
+            this.conversation = conversation;
+            this.userMsg = userMsg;
+            this.assistantMsg = assistantMsg;
+            this.streamId = streamId;
+            this.traceId = traceId;
+            this.session = session;
+            this.config = config;
+            this.draft = draft;
+            this.compressOnce = compressOnce == null ? new CompressOnce() : compressOnce;
+            this.firstWindow = firstWindow == null ? new FirstModelWindow() : firstWindow;
+            apply(packed);
+        }
+
+        private void apply(ConversationTrimmer.TrimmedRequest packed) {
+            this.systemPrompt = packed.systemPrompt();
+            this.promptHolder.set(packed.systemPrompt());
+            this.userPrompt = packed.userPrompt();
+            this.messages = packed.messages();
+            InputBudgetCalculator.InputBudget budget = inputBudgetCalculator.calculate(config);
+            int tools = 0;
+            if (StringUtils.hasText(configId())) {
+                try {
+                    tools = agentFactory.toolSchemaTokens(configId());
+                } catch (RuntimeException ex) {
+                    log.warn("tool schema tokens unavailable configId={}: {}", configId(), ex.toString());
+                }
+            }
+            if (callBudget == null) {
+                callBudget = new CallBudget(budget.inputBudget(), tools, 0);
+            } else {
+                callBudget.reset(budget.inputBudget(), tools, 0);
+            }
+        }
+
+        private void repack(LlmConfigRecord next) {
+            this.config = next;
+            if (!firstWindow.initialMessages().isEmpty()) {
+                apply(new ConversationTrimmer.TrimmedRequest(
+                        firstWindow.initialSystem(), userPrompt, firstWindow.initialMessages(), null, 0, 0, false));
+                return;
+            }
+            apply(trimmer.assemble(draft));
+        }
+
+        private String configId() {
+            return config == null || config.getConfigId() == null ? "" : config.getConfigId();
+        }
+
+        private Integer claimEstimate() {
+            int tokens = firstWindow.estimatedPromptTokens();
+            if (tokens <= 0) {
+                return null;
+            }
+            return estimateClaimed.compareAndSet(false, true) ? tokens : null;
+        }
+
+        private String userId() {
+            return userId;
+        }
+
+        private Conversation conversation() {
+            return conversation;
+        }
+
+        private ChatMessage userMsg() {
+            return userMsg;
+        }
+
+        private ChatMessage assistantMsg() {
+            return assistantMsg;
+        }
+
+        private List<Message> messages() {
+            return messages;
+        }
+
+        private String streamId() {
+            return streamId;
+        }
+
+        private String traceId() {
+            return traceId;
+        }
+
+        private String systemPrompt() {
+            String held = promptHolder.get();
+            return StringUtils.hasText(held) ? held : systemPrompt;
+        }
+
+        private String userPrompt() {
+            return userPrompt;
+        }
+
+        private StreamSession session() {
+            return session;
+        }
+
+        private Map<String, Object> truncationInfo() {
+            Map<String, Object> info = firstWindow.truncation();
+            return info == null ? Map.of() : info;
+        }
+
+        private FirstModelWindow firstWindow() {
+            return firstWindow;
+        }
+
+        private SystemPromptHolder promptHolder() {
+            return promptHolder;
+        }
+
+        private CallBudget callBudget() {
+            return callBudget;
+        }
+
+        private TurnRetrievalCache retrievalCache() {
+            return retrievalCache;
+        }
+
+        private CompressOnce compressOnce() {
+            return compressOnce;
+        }
+
+        /**
+         * 尚未发出 token 且模型报上下文超限时，再用同一套丢弃至少再丢掉一轮历史，只试一次。
+         *
+         * @param error 模型异常
+         * @return true 表示可以再调一次
+         */
+        private boolean repackForContextLength(Throwable error) {
+            if (contextLengthRetried || !isContextLengthExceeded(error)) {
+                return false;
+            }
+            contextLengthRetried = true;
+            List<Message> basis = firstWindow.initialMessages().isEmpty() ? messages : firstWindow.initialMessages();
+            String system = StringUtils.hasText(firstWindow.initialSystem()) ? firstWindow.initialSystem() : systemPrompt();
+            InputBudgetCalculator.InputBudget budget = inputBudgetCalculator.calculate(config);
+            int tools = callBudget == null ? 0 : callBudget.toolSchemaTokens();
+            TokenCounter counter = TokenCounterRegistry.forConfig(configId());
+            ConversationTrimmer.TrimmedRequest tightened = trimmer.trimConversationDroppingAtLeastOne(
+                    system, basis, budget.inputBudget(), tools, counter);
+            if (tightened.droppedUserMessages() <= 0) {
+                return false;
+            }
+            apply(tightened);
+            return true;
+        }
     }
 }

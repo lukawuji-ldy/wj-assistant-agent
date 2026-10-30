@@ -61,62 +61,67 @@ public class LongTermMemoryRetriever {
      * @return 非空则注入；空表示不注入
      */
     public String retrieveBlock(String userId, String query, MemoryRetrieveOptions options) {
+        return formatMemoryItems(retrieveItems(userId, query, options));
+    }
+
+    /**
+     * 按综合分返回条目。失败返回空列表。{@link #retrieveBlock} 用同一份结果渲染。
+     *
+     * @param userId  用户
+     * @param query   本轮用户原文
+     * @param options 截断与权重
+     * @return 可按分丢弃的条目
+     */
+    public List<MemoryItem> retrieveItems(String userId, String query, MemoryRetrieveOptions options) {
         try {
             return doRetrieve(userId, query, options == null ? MemoryRetrieveOptions.defaults() : options);
         } catch (Exception e) {
             log.warn("long-term memory retrieve failed: {}", e.toString());
-            return "";
+            return List.of();
         }
     }
 
-    private String doRetrieve(String userId, String query, MemoryRetrieveOptions options) {
+    private List<MemoryItem> doRetrieve(String userId, String query, MemoryRetrieveOptions options) {
         if (!StringUtils.hasText(userId) || !StringUtils.hasText(query)) {
-            return "";
+            return List.of();
         }
         MemoryRouteDecision decision = memoryRouter.route(query);
         if (!decision.needMemory()) {
             log.debug("memory router skip userId={}", userId);
-            return "";
+            return List.of();
         }
         String q = query.trim();
         Instant now = Instant.now();
-        List<String> sections = new ArrayList<>();
+        List<MemoryItem> items = new ArrayList<>();
 
         Set<String> profileTypes = profileTypesOnly(decision.memoryTypes());
         if (!profileTypes.isEmpty()) {
-            String profileBlock = retrieveProfile(userId, q, options, now, profileTypes, decision.memoryTypes());
-            if (StringUtils.hasText(profileBlock)) {
-                sections.add(profileBlock);
-            }
+            items.addAll(retrieveProfile(userId, q, options, now, profileTypes, decision.memoryTypes()));
         }
 
         boolean needSemantic = decision.memoryTypes().contains("SEMANTIC") && options.semanticEnabled();
         if (needSemantic) {
-            String semanticBlock = retrieveSemantic(userId, q, options, now);
-            if (StringUtils.hasText(semanticBlock)) {
-                sections.add(semanticBlock);
-            }
+            items.addAll(retrieveSemantic(userId, q, options, now));
         }
 
-        if (sections.isEmpty()) {
+        if (items.isEmpty()) {
             log.warn("memory retrieve empty after router hit types={} userId={}",
                     decision.memoryTypes(), userId);
-            return "";
         }
-        return String.join("\n\n", sections);
+        return items;
     }
 
-    private String retrieveProfile(String userId, String q, MemoryRetrieveOptions options,
-                                   Instant now, Set<String> profileTypes, Set<String> allTypes) {
+    private List<MemoryItem> retrieveProfile(String userId, String q, MemoryRetrieveOptions options,
+                                             Instant now, Set<String> profileTypes, Set<String> allTypes) {
         List<UserProfileMemory> rows = userProfileRepository.listActive(userId, profileTypes);
         if (rows.isEmpty()) {
-            return "";
+            return List.of();
         }
         List<UserProfileMemory> candidates = rows.stream()
                 .filter(m -> !isQuestionEchoJunk(m))
                 .toList();
         if (candidates.isEmpty()) {
-            return "";
+            return List.of();
         }
         List<UserProfileMemory> top = candidates.stream()
                 .sorted(Comparator.comparingDouble((UserProfileMemory m) -> score(m, q, options, now)).reversed())
@@ -130,31 +135,41 @@ public class LongTermMemoryRetriever {
         }
         log.info("memory retrieve profile hit count={} keys={} types={}",
                 top.size(), keys, allTypes);
-        return formatProfileBlock(top);
+        List<MemoryItem> items = new ArrayList<>();
+        for (UserProfileMemory row : top) {
+            String value = row.getMemoryValue() == null ? "" : row.getMemoryValue().trim();
+            items.add(new MemoryItem(row.getMemoryKey(), "profile",
+                    row.getMemoryKey() + "=" + value, score(row, q, options, now)));
+        }
+        return items;
     }
 
-    private String retrieveSemantic(String userId, String q, MemoryRetrieveOptions options, Instant now) {
+    private List<MemoryItem> retrieveSemantic(String userId, String q, MemoryRetrieveOptions options, Instant now) {
         if (semanticSearch == null) {
             log.debug("semantic search port unavailable, skip SEMANTIC");
-            return "";
+            return List.of();
         }
         List<UserSemanticHit> hits;
         try {
             hits = semanticSearch.search(userId, q, options.semanticTopK(), options.semanticMinScore());
         } catch (Exception e) {
             log.warn("semantic memory search failed: {}", e.toString());
-            return "";
+            return List.of();
         }
         if (hits == null || hits.isEmpty()) {
-            return "";
+            return List.of();
         }
         List<UserSemanticHit> top = hits.stream()
                 .sorted(Comparator.comparingDouble((UserSemanticHit h) -> scoreSemantic(h, options, now)).reversed())
                 .limit(options.semanticTopK())
                 .toList();
-        // touch 由 EmbeddingSemanticMemorySearch / 仓负责；此处若 hit 含 id 则再触达一次无妨，由实现方 touch
         log.info("memory retrieve semantic hit count={}", top.size());
-        return formatSemanticBlock(top);
+        List<MemoryItem> items = new ArrayList<>();
+        for (UserSemanticHit hit : top) {
+            String content = hit.getContent() == null ? "" : hit.getContent().trim();
+            items.add(new MemoryItem(hit.getId(), "semantic", content, scoreSemantic(hit, options, now)));
+        }
+        return items;
     }
 
     static Set<String> profileTypesOnly(Set<String> types) {
@@ -281,6 +296,35 @@ public class LongTermMemoryRetriever {
                 .collect(Collectors.joining("\n"));
         return "已知用户长期记忆（回答「我喜欢/我的…」须优先依据下列事实；禁止把用户偏好理解成助手自身偏好）:\n"
                 + body;
+    }
+
+    /**
+     * 按栏目渲染条目。优化器丢条目后用同一格式。
+     *
+     * @param items 保留的条目
+     * @return 可注入系统提示的块；空列表返回空串
+     */
+    public static String formatMemoryItems(List<MemoryItem> items) {
+        if (items == null || items.isEmpty()) {
+            return "";
+        }
+        List<String> sections = new ArrayList<>();
+        String profile = items.stream()
+                .filter(item -> item != null && "profile".equals(item.section()) && StringUtils.hasText(item.text()))
+                .map(MemoryItem::text)
+                .collect(Collectors.joining("\n"));
+        if (StringUtils.hasText(profile)) {
+            sections.add("已知用户长期记忆（回答「我喜欢/我的…」须优先依据下列事实；禁止把用户偏好理解成助手自身偏好）:\n"
+                    + profile);
+        }
+        String semantic = items.stream()
+                .filter(item -> item != null && "semantic".equals(item.section()) && StringUtils.hasText(item.text()))
+                .map(item -> "- " + item.text().trim())
+                .collect(Collectors.joining("\n"));
+        if (StringUtils.hasText(semantic)) {
+            sections.add("用户语义记忆（叙述性经历，回答相关问题时可引用）:\n" + semantic);
+        }
+        return String.join("\n\n", sections);
     }
 
     static String formatSemanticBlock(List<UserSemanticHit> hits) {

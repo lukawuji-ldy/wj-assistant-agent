@@ -10,8 +10,10 @@ CREATE TABLE IF NOT EXISTS llm_config
     api_key_cipher  TEXT          NOT NULL,
     model           VARCHAR(128)  NOT NULL,
     temperature     NUMERIC(4, 2),
-    max_tokens      INT,
+    output_max_tokens INT,
     extra_json      JSONB,
+    token_encoding  VARCHAR(32),
+    context_window_size INT       NOT NULL DEFAULT 32768,
     status          VARCHAR(20)   NOT NULL DEFAULT 'ACTIVE',
     create_time     TIMESTAMPTZ   NOT NULL,
     update_time     TIMESTAMPTZ   NOT NULL,
@@ -31,8 +33,10 @@ COMMENT ON COLUMN llm_config.base_url IS 'API Base URL';
 COMMENT ON COLUMN llm_config.api_key_cipher IS 'API Key 密文';
 COMMENT ON COLUMN llm_config.model IS '模型名（CHAT=对话模型，EMBEDDING=向量模型）';
 COMMENT ON COLUMN llm_config.temperature IS '温度（仅 CHAT）';
-COMMENT ON COLUMN llm_config.max_tokens IS '最大生成 token（仅 CHAT）';
+COMMENT ON COLUMN llm_config.output_max_tokens IS '输出上限（token，仅 CHAT）。发给模型的 max_tokens，并从 context_window_size 中预留';
+COMMENT ON COLUMN llm_config.context_window_size IS '输入上下文窗口（token），与 output_max_tokens 分开。CHAT 默认 32768，EMBEDDING 默认 8192';
 COMMENT ON COLUMN llm_config.extra_json IS '扩展参数 JSON（路径、dimensions 等）';
+COMMENT ON COLUMN llm_config.token_encoding IS '文本 token 词表：cl100k_base | o200k_base；空则按 model 推断，对不上时用 cl100k_base';
 COMMENT ON COLUMN llm_config.status IS 'ACTIVE/DISABLED';
 COMMENT ON COLUMN llm_config.create_time IS '创建时间';
 COMMENT ON COLUMN llm_config.update_time IS '更新时间';

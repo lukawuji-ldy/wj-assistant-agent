@@ -5,24 +5,23 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import java.time.Duration;
 
 /**
- * Agent / 提示词 / 流式续传配置。
+ * Agent / 鎻愮ず璇?/ 娴佸紡缁紶閰嶇疆銆?
  *
  * @author liudy
  */
 @ConfigurationProperties(prefix = "wuji.agent")
 public class WujiAgentProperties {
 
-    /** Agent 业务名（ReactAgent.name 前缀） */
+    /** Agent 涓氬姟鍚嶏紙ReactAgent.name 鍓嶇紑锛?*/
     private String id = "default";
 
     private String systemPromptCode = "agent.default.system";
     private String userPromptCode = "agent.default.user";
-    private int memoryWindowSize = 20;
 
-    /** 工具调用最大轮次，禁止无限循环 */
+    /** 宸ュ叿璋冪敤鏈€澶ц疆娆★紝绂佹鏃犻檺寰幆 */
     private int maxToolRounds = 8;
 
-    /** 单次用户请求内模型调用上限（含工具循环） */
+    /** 鍗曟鐢ㄦ埛璇锋眰鍐呮ā鍨嬭皟鐢ㄤ笂闄愶紙鍚伐鍏峰惊鐜級 */
     private int maxModelCalls = 16;
 
     private Checkpoint checkpoint = new Checkpoint();
@@ -51,14 +50,6 @@ public class WujiAgentProperties {
 
     public void setUserPromptCode(String userPromptCode) {
         this.userPromptCode = userPromptCode;
-    }
-
-    public int getMemoryWindowSize() {
-        return memoryWindowSize;
-    }
-
-    public void setMemoryWindowSize(int memoryWindowSize) {
-        this.memoryWindowSize = memoryWindowSize;
     }
 
     public int getMaxToolRounds() {
@@ -94,7 +85,7 @@ public class WujiAgentProperties {
     }
 
     /**
-     * Checkpoint Saver 配置。
+     * Checkpoint Saver 閰嶇疆銆?
      *
      * @author liudy
      */
@@ -103,7 +94,7 @@ public class WujiAgentProperties {
         /** postgres | memory */
         private String type = "postgres";
 
-        /** 默认 false：表由 schema/Flyway 管理；SAA 1.1.2.2 建索引非幂等 */
+        /** 榛樿 false锛氳〃鐢?schema/Flyway 绠＄悊锛汼AA 1.1.2.2 寤虹储寮曢潪骞傜瓑 */
         private boolean createTables = false;
 
         private String host = "127.0.0.1";
@@ -174,19 +165,19 @@ public class WujiAgentProperties {
     }
 
     /**
-     * SSE 心跳与续传缓冲配置。
+     * SSE 蹇冭烦涓庣画浼犵紦鍐查厤缃€?
      *
      * @author liudy
      */
     public static class Stream {
 
-        /** 心跳间隔 */
+        /** 蹇冭烦闂撮殧 */
         private Duration heartbeatInterval = Duration.ofSeconds(15);
 
-        /** 续传缓冲最大事件数 */
+        /** 缁紶缂撳啿鏈€澶т簨浠舵暟 */
         private int resumeBufferEvents = 200;
 
-        /** 流结束后缓冲保留时长 */
+        /** 娴佺粨鏉熷悗缂撳啿淇濈暀鏃堕暱 */
         private Duration resumeTtl = Duration.ofMinutes(10);
 
         public Duration getHeartbeatInterval() {

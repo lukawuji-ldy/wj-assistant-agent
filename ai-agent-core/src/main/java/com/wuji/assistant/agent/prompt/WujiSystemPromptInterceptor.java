@@ -4,6 +4,7 @@ import com.alibaba.cloud.ai.graph.agent.interceptor.ModelCallHandler;
 import com.alibaba.cloud.ai.graph.agent.interceptor.ModelInterceptor;
 import com.alibaba.cloud.ai.graph.agent.interceptor.ModelRequest;
 import com.alibaba.cloud.ai.graph.agent.interceptor.ModelResponse;
+import com.wuji.assistant.agent.token.SystemPromptHolder;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.util.StringUtils;
@@ -13,8 +14,12 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 将 {@link #META_SYSTEM_PROMPT} 注入为<strong>唯一</strong> system，并剥离 messages 中的 SystemMessage，
- * 避免 PostgresSaver AppendStrategy 累积多条 SystemMessage 导致模型混乱。
+ * {@link #META_SYSTEM_PROMPT} 是当轮系统提示的 metadata 键。
+ * 调用方把 {@link com.wuji.assistant.agent.token.SystemPromptHolder} 放进 RunnableConfig，
+ * {@code AgentLlmNode} 带入 {@code ModelRequest.context}；{@code TokenBudgetEnforcer} 读它，压缩后回写。
+ * <p>
+ * {@link #interceptModel} 会按该键注入 system，并剥离 messages 中的 {@code SystemMessage}。
+ * 本拦截器排在 {@code TokenBudgetInterceptor} 之前，模型收到的是预算执行后写回的请求。
  *
  * @author liudy
  */
@@ -47,6 +52,9 @@ public class WujiSystemPromptInterceptor extends ModelInterceptor {
             return null;
         }
         Object v = context.get(META_SYSTEM_PROMPT);
+        if (v instanceof SystemPromptHolder holder && StringUtils.hasText(holder.get())) {
+            return holder.get();
+        }
         return v instanceof String s && StringUtils.hasText(s) ? s : null;
     }
 
