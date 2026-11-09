@@ -181,7 +181,6 @@ wuji:
       api-key: ${WUJI_MCP_API_KEY:alibaba}
   memory:
     short:
-      max-message-count: 20
       compress-message-threshold: 30
       keep-recent-messages: 5
       compress-token-threshold: 12000

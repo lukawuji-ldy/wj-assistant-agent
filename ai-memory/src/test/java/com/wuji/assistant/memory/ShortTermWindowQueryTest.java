@@ -17,6 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -45,15 +46,15 @@ class ShortTermWindowQueryTest {
         newest.setMessageId("newest");
         newest.setTokenCount(1);
         newest.setContent("hi");
-        when(chatMessageRepository.listAfterWatermarkAsc("c1", "u1", until, 20))
+        when(chatMessageRepository.listAfterWatermarkAsc("c1", "u1", until, null, 20))
                 .thenReturn(List.of(newest));
 
         ShortTermMemoryService service = new ShortTermMemoryService(chatMessageRepository, conversationRepository);
         ShortTermContext context = service.loadContext("u1", "c1", 20);
 
         assertEquals("newest", context.messages().get(0).getMessageId());
-        verify(chatMessageRepository).listAfterWatermarkAsc(eq("c1"), eq("u1"), eq(until), eq(20));
-        verify(chatMessageRepository, never()).listOldestAfterWatermarkAsc(any(), any(), any(), anyInt());
+        verify(chatMessageRepository).listAfterWatermarkAsc(eq("c1"), eq("u1"), eq(until), isNull(), eq(20));
+        verify(chatMessageRepository, never()).listOldestAfterWatermarkAsc(any(), any(), any(), any(), anyInt());
     }
 
     @Test

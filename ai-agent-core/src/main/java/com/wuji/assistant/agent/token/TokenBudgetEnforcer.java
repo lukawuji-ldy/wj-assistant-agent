@@ -135,7 +135,7 @@ public class TokenBudgetEnforcer {
         if (!ran) {
             return null;
         }
-        int maxMessages = shortTerm.getMaxMessageCount();
+        int maxMessages = shortTerm.windowSize();
         ShortTermContext loaded = shortTermMemoryService.loadContext(userId, conversationId, maxMessages);
         String summary = loaded == null ? "" : loaded.summaryJson();
         List<Message> history = toDialogue(loaded == null ? List.of() : loaded.messages(),

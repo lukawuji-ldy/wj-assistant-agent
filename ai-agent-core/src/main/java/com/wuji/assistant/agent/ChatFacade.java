@@ -309,7 +309,7 @@ public class ChatFacade {
             conversation = conversationRepository.create(userId, null);
         }
 
-        int maxMessages = memoryProperties.getShort().getMaxMessageCount();
+        int maxMessages = memoryProperties.getShort().windowSize();
         ShortTermContext shortTerm = shortTermMemoryService.loadContext(
                 userId, conversation.getConversationId(), maxMessages);
         List<ChatMessage> history = shortTerm.messages();

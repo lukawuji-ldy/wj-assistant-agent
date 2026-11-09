@@ -47,7 +47,8 @@ public class ShortTermMemoryService {
         List<ChatMessage> window;
         if (conversation.getSummaryUntilTime() != null) {
             window = chatMessageRepository.listAfterWatermarkAsc(
-                    conversationId, userId, conversation.getSummaryUntilTime(), limit);
+                    conversationId, userId, conversation.getSummaryUntilTime(),
+                    conversation.getSummaryUntilMessageId(), limit);
         } else {
             window = chatMessageRepository.listRecentAsc(conversationId, userId, limit);
         }

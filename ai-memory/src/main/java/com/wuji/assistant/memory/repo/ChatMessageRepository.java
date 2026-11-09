@@ -138,29 +138,62 @@ public class ChatMessageRepository {
     }
 
     /**
+     * watermark 边界片段。有 {@code untilMessageId} 时先按时间、同毫秒再用 message_id 消歧，
+     * 与 {@code conversation.summary_until_message_id} 对齐；为空时退化为纯时间边界。
+     */
+    private static String watermarkClause(String untilMessageId) {
+        return StringUtils.hasText(untilMessageId)
+                ? "(create_time > ? OR (create_time = ? AND id > (SELECT id FROM chat_message WHERE message_id = ?)))"
+                : "create_time > ?";
+    }
+
+    private static List<Object> boundaryArgs(String conversationId, String userId,
+                                             OffsetDateTime untilTime, String untilMessageId) {
+        List<Object> args = new ArrayList<>();
+        args.add(conversationId);
+        args.add(userId);
+        args.add(Timestamp.from(untilTime.toInstant()));
+        if (StringUtils.hasText(untilMessageId)) {
+            args.add(Timestamp.from(untilTime.toInstant()));
+            args.add(untilMessageId);
+        }
+        return args;
+    }
+
+    private static Object[] watermarkArgs(String conversationId, String userId,
+                                          OffsetDateTime untilTime, String untilMessageId, Object tail) {
+        List<Object> args = boundaryArgs(conversationId, userId, untilTime, untilMessageId);
+        args.add(tail);
+        return args.toArray();
+    }
+
+    /**
      * 拉取 watermark 之后的最近消息（时间正序）。
      * <p>
      * 短期窗口用：{@code ORDER BY create_time DESC LIMIT} 再反转，得到最新 N 条。
      * 摘要压缩不要用本方法，改用 {@link #listOldestAfterWatermarkAsc}。
      *
-     * @param conversationId 会话
-     * @param userId         用户
-     * @param untilTime      summary_until_time
-     * @param limit          窗口上限
+     * @param conversationId  会话
+     * @param userId          用户
+     * @param untilTime       summary_until_time
+     * @param untilMessageId  summary_until_message_id，可空
+     * @param limit           窗口上限
      * @return 正序消息（最新一段）
      */
     public List<ChatMessage> listAfterWatermarkAsc(String conversationId, String userId,
-                                                  OffsetDateTime untilTime, int limit) {
+                                                  OffsetDateTime untilTime, String untilMessageId, int limit) {
         if (untilTime == null) {
             return listRecentAsc(conversationId, userId, limit);
         }
-        List<ChatMessage> desc = jdbcTemplate.query("""
+        String sql = """
                 SELECT * FROM chat_message
                 WHERE conversation_id = ? AND user_id = ?
-                  AND create_time > ?
+                  AND %s
                 ORDER BY create_time DESC, id DESC
                 LIMIT ?
-                """, MAPPER, conversationId, userId, Timestamp.from(untilTime.toInstant()), limit);
+                """.formatted(watermarkClause(untilMessageId));
+        List<ChatMessage> desc = jdbcTemplate.query(sql, MAPPER,
+                watermarkArgs(conversationId, userId, untilTime, untilMessageId, limit));
         List<ChatMessage> asc = new ArrayList<>(desc);
         Collections.reverse(asc);
         return asc;
@@ -170,16 +203,17 @@ public class ChatMessageRepository {
      * 拉取 watermark 之后最早的一段消息（时间正序）。
      * <p>
      * 摘要压缩用：每次取紧挨旧 watermark 的连续段，而不是最新 N 条。
-     * {@code untilTime == null} 时不加时间条件，取全会话最旧的 {@code limit} 条。
+     * {@code untilTime == null} 时不加边界条件，取全会话最旧的 {@code limit} 条。
      *
-     * @param conversationId 会话
-     * @param userId         用户
-     * @param untilTime      summary_until_time，可空
-     * @param limit          条数上限
+     * @param conversationId  会话
+     * @param userId          用户
+     * @param untilTime       summary_until_time，可空
+     * @param untilMessageId  summary_until_message_id，可空
+     * @param limit           条数上限
      * @return 正序消息（最旧一段）
      */
     public List<ChatMessage> listOldestAfterWatermarkAsc(String conversationId, String userId,
-                                                         OffsetDateTime untilTime, int limit) {
+                                                         OffsetDateTime untilTime, String untilMessageId, int limit) {
         if (untilTime == null) {
             return jdbcTemplate.query("""
                     SELECT * FROM chat_message
@@ -188,24 +222,28 @@ public class ChatMessageRepository {
                     LIMIT ?
                     """, MAPPER, conversationId, userId, limit);
         }
-        return jdbcTemplate.query("""
+        String sql = """
                 SELECT * FROM chat_message
                 WHERE conversation_id = ? AND user_id = ?
-                  AND create_time > ?
+                  AND %s
                 ORDER BY create_time ASC, id ASC
                 LIMIT ?
-                """, MAPPER, conversationId, userId, Timestamp.from(untilTime.toInstant()), limit);
+                """.formatted(watermarkClause(untilMessageId));
+        return jdbcTemplate.query(sql, MAPPER,
+                watermarkArgs(conversationId, userId, untilTime, untilMessageId, limit));
     }
 
     /**
      * watermark 之后消息的 token_count 合计。{@code untilTime == null} 时统计该会话全部消息。
      *
-     * @param conversationId 会话
-     * @param userId         用户
-     * @param untilTime      summary_until_time，可空
+     * @param conversationId  会话
+     * @param userId          用户
+     * @param untilTime       summary_until_time，可空
+     * @param untilMessageId  summary_until_message_id，可空
      * @return token 合计
      */
-    public long sumTokenCountAfterWatermark(String conversationId, String userId, OffsetDateTime untilTime) {
+    public long sumTokenCountAfterWatermark(String conversationId, String userId,
+                                            OffsetDateTime untilTime, String untilMessageId) {
         Long sum;
         if (untilTime == null) {
             sum = jdbcTemplate.queryForObject("""
@@ -213,13 +251,45 @@ public class ChatMessageRepository {
                     WHERE conversation_id = ? AND user_id = ?
                     """, Long.class, conversationId, userId);
         } else {
-            sum = jdbcTemplate.queryForObject("""
+            String sql = """
                     SELECT COALESCE(SUM(token_count), 0) FROM chat_message
                     WHERE conversation_id = ? AND user_id = ?
-                      AND create_time > ?
-                    """, Long.class, conversationId, userId, Timestamp.from(untilTime.toInstant()));
+                      AND %s
+                    """.formatted(watermarkClause(untilMessageId));
+            sum = jdbcTemplate.queryForObject(sql, Long.class,
+                    boundaryArgs(conversationId, userId, untilTime, untilMessageId).toArray());
         }
         return sum == null ? 0L : sum;
+    }
+
+    /**
+     * watermark 之后消息条数。{@code untilTime == null} 时统计该会话全部消息。
+     * 用于摘要压缩触发判定，避免使用终身累计的 {@code conversation.message_count}。
+     *
+     * @param conversationId  会话
+     * @param userId          用户
+     * @param untilTime       summary_until_time，可空
+     * @param untilMessageId  summary_until_message_id，可空
+     * @return 条数
+     */
+    public long countAfterWatermark(String conversationId, String userId,
+                                    OffsetDateTime untilTime, String untilMessageId) {
+        Long count;
+        if (untilTime == null) {
+            count = jdbcTemplate.queryForObject("""
+                    SELECT COUNT(*) FROM chat_message
+                    WHERE conversation_id = ? AND user_id = ?
+                    """, Long.class, conversationId, userId);
+        } else {
+            String sql = """
+                    SELECT COUNT(*) FROM chat_message
+                    WHERE conversation_id = ? AND user_id = ?
+                      AND %s
+                    """.formatted(watermarkClause(untilMessageId));
+            count = jdbcTemplate.queryForObject(sql, Long.class,
+                    boundaryArgs(conversationId, userId, untilTime, untilMessageId).toArray());
+        }
+        return count == null ? 0L : count;
     }
 
     /**

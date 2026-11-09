@@ -71,24 +71,24 @@ public class WujiMemoryProperties {
      * 短记忆窗口。
      */
     public static class ShortTerm {
-        private int maxMessageCount = 20;
+        /** 未摘要消息条数达到该阈值触发会话摘要压缩（按 watermark 后的增量计数） */
         private int compressMessageThreshold = 30;
+        /** 摘要压缩后保留的最近消息条数，作为窗口余量避免出现未摘要盲区 */
         private int keepRecentMessages = 10;
+        /** 未摘要消息估算 Token 数达到该阈值触发会话摘要压缩 */
         private int compressTokenThreshold = 12000;
+        /** 是否启用 LLM 摘要；关闭时降级为规则摘要 */
         private boolean summaryLlmEnabled = true;
+        /** 异步 LLM 摘要调用超时时间，超时降级规则摘要 */
         private Duration summaryTimeout = Duration.ofSeconds(20);
+        /** 是否在本轮同步执行 LLM 摘要；false 时异步丢入 llmCallScheduler */
         private boolean summarySyncEnabled = false;
+        /** 同步摘要超时时间（summarySyncEnabled=true 时生效） */
         private Duration summarySyncTimeout = Duration.ofSeconds(5);
+        /** 摘要系统提示词编码（对应 prompt_template 主表 key） */
         private String summarySystemPromptCode = "memory.summary.system";
+        /** 摘要用户提示词编码（对应 prompt_template 主表 key） */
         private String summaryUserPromptCode = "memory.summary.user";
-
-        public int getMaxMessageCount() {
-            return maxMessageCount;
-        }
-
-        public void setMaxMessageCount(int maxMessageCount) {
-            this.maxMessageCount = maxMessageCount;
-        }
 
         public int getCompressMessageThreshold() {
             return compressMessageThreshold;
@@ -104,6 +104,17 @@ public class WujiMemoryProperties {
 
         public void setKeepRecentMessages(int keepRecentMessages) {
             this.keepRecentMessages = keepRecentMessages;
+        }
+
+        /**
+         * 短期窗口条数上限（派生值）：未摘要条数恒不超过 {@link #compressMessageThreshold}，
+         * 加 {@link #keepRecentMessages} 余量即可完整覆盖，避免出现未摘要盲区。
+         *
+         * @return 窗口上限，至少 1
+         */
+        public int windowSize() {
+            long size = (long) compressMessageThreshold + keepRecentMessages;
+            return (int) Math.max(1, Math.min(size, Integer.MAX_VALUE));
         }
 
         public int getCompressTokenThreshold() {

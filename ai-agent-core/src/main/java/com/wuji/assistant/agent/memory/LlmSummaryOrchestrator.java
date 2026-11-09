@@ -17,6 +17,7 @@ import org.slf4j.MDC;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import reactor.core.Disposable;
@@ -25,11 +26,13 @@ import reactor.core.scheduler.Scheduler;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -44,6 +47,11 @@ public class LlmSummaryOrchestrator {
     private static final Logger log = LoggerFactory.getLogger(LlmSummaryOrchestrator.class);
 
     private static final int MESSAGE_CHARS = 800;
+
+    /** LLM 摘要四字段上限，与规则降级路径（{@code SummaryService.buildRollingSummary}）口径一致，防止滚动合并递归膨胀。 */
+    static final int MAX_FACTS = 20;
+    static final int MAX_DECISIONS = 10;
+    static final int MAX_PENDING_TASKS = 10;
 
     static final String FALLBACK_SYSTEM = """
             你是会话摘要器。只输出 JSON，不要 markdown。
@@ -64,18 +72,21 @@ public class LlmSummaryOrchestrator {
     private final PromptTemplateService promptTemplateService;
     private final ModelRouter modelRouter;
     private final ObjectMapper objectMapper;
+    private final Scheduler llmCallScheduler;
     private final ConversationCompressGate compressGate = new ConversationCompressGate();
 
     public LlmSummaryOrchestrator(WujiMemoryProperties memoryProperties,
                                   SummaryService summaryService,
                                   PromptTemplateService promptTemplateService,
                                   ModelRouter modelRouter,
-                                  ObjectMapper objectMapper) {
+                                  ObjectMapper objectMapper,
+                                  @Qualifier("llmCallScheduler") Scheduler llmCallScheduler) {
         this.memoryProperties = memoryProperties;
         this.summaryService = summaryService;
         this.promptTemplateService = promptTemplateService;
         this.modelRouter = modelRouter;
         this.objectMapper = objectMapper;
+        this.llmCallScheduler = llmCallScheduler;
     }
 
     /**
@@ -124,8 +135,9 @@ public class LlmSummaryOrchestrator {
             SummaryService.CompressionBatch batch = prepared.get();
             String summaryJson = summarizeOrRules(userId, batch, cfg, cfg.getSummaryTimeout());
             summaryService.commitSummary(batch, summaryJson);
-            log.info("summary compressed conversationId={} untilMsg={} messages={}",
-                    conversationId, batch.lastCovered().getMessageId(), batch.toCompress().size());
+            log.info("summary compressed conversationId={} untilMsg={} messages={} {}",
+                    conversationId, batch.lastCovered().getMessageId(), batch.toCompress().size(),
+                    SummaryService.countsLabel(summaryJson, objectMapper));
         } catch (Exception e) {
             log.warn("summary orchestrator failed conversationId={}: {}", conversationId, e.toString());
         }
@@ -193,8 +205,9 @@ public class LlmSummaryOrchestrator {
                     ? summarizeOrRules(userId, batch, cfg, llmTimeout == null ? cfg.getSummaryTimeout() : llmTimeout)
                     : summaryService.buildRollingSummary(batch.oldSummaryJson(), batch.toCompress());
             summaryService.commitSummary(batch, summaryJson);
-            log.info("summary urgent compressed conversationId={} untilMsg={} messages={}",
-                    conversationId, batch.lastCovered().getMessageId(), batch.toCompress().size());
+            log.info("summary urgent compressed conversationId={} untilMsg={} messages={} {}",
+                    conversationId, batch.lastCovered().getMessageId(), batch.toCompress().size(),
+                    SummaryService.countsLabel(summaryJson, objectMapper));
         } catch (Exception e) {
             log.warn("urgent summary failed conversationId={}: {}", conversationId, e.toString());
         }
@@ -283,10 +296,25 @@ public class LlmSummaryOrchestrator {
         }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("goal", root.has("goal") && !root.get("goal").isNull() ? root.get("goal").asText("") : "");
-        out.put("facts", textList(root.get("facts")));
-        out.put("decisions", textList(root.get("decisions")));
-        out.put("pending_tasks", textList(root.get("pending_tasks")));
+        out.put("facts", capList(textList(root.get("facts")), MAX_FACTS));
+        out.put("decisions", capList(textList(root.get("decisions")), MAX_DECISIONS));
+        out.put("pending_tasks", capList(textList(root.get("pending_tasks")), MAX_PENDING_TASKS));
         return PostgresText.sanitizeJson(mapper.writeValueAsString(out));
+    }
+
+    /**
+     * 去重（保持顺序）后保留最新 {@code max} 条，与规则路径的 recency 淘汰口径一致。
+     *
+     * @param items 原始条目
+     * @param max   上限
+     * @return 去重并裁剪后的条目
+     */
+    private static List<String> capList(List<String> items, int max) {
+        List<String> deduped = new ArrayList<>(new LinkedHashSet<>(items));
+        if (deduped.size() <= max) {
+            return deduped;
+        }
+        return new ArrayList<>(deduped.subList(deduped.size() - max, deduped.size()));
     }
 
     private static List<String> textList(JsonNode node) {
@@ -321,24 +349,22 @@ public class LlmSummaryOrchestrator {
         return s.trim();
     }
 
-    private static <T> T callWithTimeout(Callable<T> call, Duration timeout) throws Exception {
-        CompletableFuture<T> future = CompletableFuture.supplyAsync(() -> {
+    private <T> T callWithTimeout(Callable<T> call, Duration timeout) throws Exception {
+        CompletableFuture<T> future = new CompletableFuture<>();
+        Disposable d = llmCallScheduler.schedule(() -> {
             try {
-                return call.call();
-            } catch (Exception e) {
-                throw new RuntimeException(e);
+                future.complete(call.call());
+            } catch (Throwable t) {
+                future.completeExceptionally(t);
             }
         });
         try {
             return future.get(Math.max(1L, timeout.toMillis()), TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
-            future.cancel(true);
+            d.dispose();
             throw e;
-        } catch (Exception e) {
+        } catch (ExecutionException e) {
             Throwable cause = e.getCause();
-            if (cause instanceof RuntimeException re && re.getCause() instanceof Exception nested) {
-                throw nested;
-            }
             if (cause instanceof Exception ex) {
                 throw ex;
             }

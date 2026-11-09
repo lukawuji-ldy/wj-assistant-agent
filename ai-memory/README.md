@@ -38,7 +38,7 @@ Context Builder → 注入 ChatFacade / ReactAgent System
 
 ## 主要功能
 
-- **短期记忆**：`max-message-count` 窗口；越窗后 summary + watermark，保留最近消息。token 是否超限在入模时按模型 `W - R` 裁剪
+- **短期记忆**：watermark 之后按 `compress-message-threshold + keep-recent-messages` 装载窗口；越窗后 summary + watermark，保留最近消息。token 是否超限在入模时按模型 `W - R` 裁剪
 - **长期写入**：Action = INSERT / UPDATE / MERGE / DELETE / IGNORE + 冲突解决
 - **抽取**：默认 `wuji.memory.extract.mode=hybrid`（LLM 多 Action，失败可降级规则启发式）；分流 PROFILE/PREFERENCE → `user_profile`，SEMANTIC → `user_semantic_memory`
 - **规则分 key 约定**：如 `display_name`（仅「我叫」）、`hometown`、`residence`、`preference.*`；**禁止**用「我是」写 `display_name`

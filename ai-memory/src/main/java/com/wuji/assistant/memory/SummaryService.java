@@ -1,5 +1,6 @@
 package com.wuji.assistant.memory;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wuji.assistant.common.util.PostgresText;
 import com.wuji.assistant.memory.model.ChatMessage;
@@ -13,6 +14,7 @@ import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -61,7 +63,7 @@ public class SummaryService {
      *
      * @param userId                   用户
      * @param conversationId           会话
-     * @param compressMessageThreshold 消息条数阈值（lifetime {@code message_count}）
+     * @param compressMessageThreshold watermark 之后未摘要条数阈值
      * @param keepRecentMessages       不压入摘要的尾部条数
      * @param compressTokenThreshold   watermark 之后 token 合计阈值；0 表示不按 token 触发
      */
@@ -77,8 +79,9 @@ public class SummaryService {
             CompressionBatch ready = batch.get();
             String summaryJson = buildRollingSummary(ready.oldSummaryJson(), ready.toCompress());
             commitSummary(ready, summaryJson);
-            log.info("summary compressed conversationId={} untilMsg={} facts≈{}",
-                    conversationId, ready.lastCovered().getMessageId(), ready.toCompress().size());
+            log.info("summary compressed conversationId={} untilMsg={} messages={} {}",
+                    conversationId, ready.lastCovered().getMessageId(), ready.toCompress().size(),
+                    countsLabel(summaryJson, objectMapper));
         } catch (Exception e) {
             log.warn("compressIfNeeded failed conversationId={}: {}", conversationId, e.toString());
         }
@@ -89,7 +92,7 @@ public class SummaryService {
      *
      * @param userId                   用户
      * @param conversationId           会话
-     * @param compressMessageThreshold 条数阈值
+     * @param compressMessageThreshold 条数阈值（watermark 之后未摘要条数）
      * @param keepRecentMessages       保留尾部
      * @param compressTokenThreshold   token 阈值
      * @return 待压缩批次
@@ -100,15 +103,19 @@ public class SummaryService {
         Conversation conversation = conversationRepository.requireOwned(userId, conversationId);
         int keep = Math.max(2, keepRecentMessages);
         int messageThreshold = Math.max(2, compressMessageThreshold);
-        boolean byCount = conversation.getMessageCount() >= messageThreshold;
+        String untilMessageId = conversation.getSummaryUntilMessageId();
+        long outstanding = chatMessageRepository.countAfterWatermark(
+                conversationId, userId, conversation.getSummaryUntilTime(), untilMessageId);
+        boolean byCount = outstanding >= messageThreshold;
         long tokens = chatMessageRepository.sumTokenCountAfterWatermark(
-                conversationId, userId, conversation.getSummaryUntilTime());
+                conversationId, userId, conversation.getSummaryUntilTime(), untilMessageId);
         boolean byTokens = compressTokenThreshold > 0 && tokens >= compressTokenThreshold;
         if (!byCount && !byTokens) {
             return Optional.empty();
         }
         List<ChatMessage> oldest = chatMessageRepository.listOldestAfterWatermarkAsc(
-                conversationId, userId, conversation.getSummaryUntilTime(), messageThreshold + keep);
+                conversationId, userId, conversation.getSummaryUntilTime(), untilMessageId,
+                messageThreshold + keep);
         if (oldest.size() <= keep) {
             return Optional.empty();
         }
@@ -141,9 +148,12 @@ public class SummaryService {
     public Optional<CompressionBatch> prepareForced(String userId, String conversationId, int keepRecentMessages) {
         Conversation conversation = conversationRepository.requireOwned(userId, conversationId);
         int keep = Math.max(2, keepRecentMessages);
-        int limit = Math.max(keep + 1, conversation.getMessageCount());
+        String untilMessageId = conversation.getSummaryUntilMessageId();
+        long outstanding = chatMessageRepository.countAfterWatermark(
+                conversationId, userId, conversation.getSummaryUntilTime(), untilMessageId);
+        int limit = (int) Math.min(Math.max(keep + 1L, outstanding), Integer.MAX_VALUE);
         List<ChatMessage> oldest = chatMessageRepository.listOldestAfterWatermarkAsc(
-                conversationId, userId, conversation.getSummaryUntilTime(), limit);
+                conversationId, userId, conversation.getSummaryUntilTime(), untilMessageId, limit);
         if (oldest.size() <= keep) {
             return Optional.empty();
         }
@@ -156,6 +166,7 @@ public class SummaryService {
     public String buildRollingSummary(String oldSummaryJson, List<ChatMessage> messages) throws Exception {
         Map<String, Object> summary = new LinkedHashMap<>();
         List<String> facts = new ArrayList<>();
+        List<String> decisions = new ArrayList<>();
         List<String> pending = new ArrayList<>();
         String goal = null;
 
@@ -176,6 +187,18 @@ public class SummaryService {
                         String fact = PostgresText.sanitize(String.valueOf(o));
                         if (StringUtils.hasText(fact)) {
                             facts.add(fact);
+                        }
+                    }
+                }
+                // decisions 只有 LLM 路径会产出，规则降级必须原样继承，否则不可恢复
+                Object d = old.get("decisions");
+                if (d instanceof List<?> list) {
+                    for (Object o : list) {
+                        if (o != null && decisions.size() < 20) {
+                            String decision = PostgresText.sanitize(String.valueOf(o));
+                            if (StringUtils.hasText(decision)) {
+                                decisions.add(decision);
+                            }
                         }
                     }
                 }
@@ -212,13 +235,41 @@ public class SummaryService {
             }
             facts.add(m.getRole() + ": " + snippet);
         }
+        facts = dedupe(facts);
         while (facts.size() > 20) {
             facts.remove(0);
         }
+        decisions = dedupe(decisions);
+        while (decisions.size() > 10) {
+            decisions.remove(0);
+        }
+        pending = dedupe(pending);
         summary.put("goal", goal == null ? "" : goal);
         summary.put("facts", facts);
-        summary.put("decisions", List.of());
+        summary.put("decisions", decisions);
         summary.put("pending_tasks", pending);
         return PostgresText.sanitizeJson(objectMapper.writeValueAsString(summary));
+    }
+
+    private static List<String> dedupe(List<String> items) {
+        return new ArrayList<>(new LinkedHashSet<>(items));
+    }
+
+    /**
+     * 摘要 JSON 的条目计数，供压缩日志观测；解析失败返回占位符。
+     *
+     * @param summaryJson 结构化摘要
+     * @param mapper      JSON 解析器
+     * @return {@code facts≈N decisions≈M} 形式的标签
+     */
+    public static String countsLabel(String summaryJson, ObjectMapper mapper) {
+        try {
+            JsonNode root = mapper.readTree(summaryJson);
+            int facts = root != null && root.path("facts").isArray() ? root.path("facts").size() : 0;
+            int decisions = root != null && root.path("decisions").isArray() ? root.path("decisions").size() : 0;
+            return "facts≈" + facts + " decisions≈" + decisions;
+        } catch (Exception e) {
+            return "facts≈? decisions≈?";
+        }
     }
 }

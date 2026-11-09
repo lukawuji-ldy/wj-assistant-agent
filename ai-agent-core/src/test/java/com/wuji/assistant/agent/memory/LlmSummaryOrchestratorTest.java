@@ -1,5 +1,6 @@
 package com.wuji.assistant.agent.memory;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wuji.assistant.agent.config.WujiMemoryProperties;
 import com.wuji.assistant.agent.model.ModelRouter;
@@ -15,12 +16,14 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -65,14 +68,16 @@ class LlmSummaryOrchestratorTest {
                 summaryService,
                 promptTemplateService,
                 modelRouter,
-                new ObjectMapper());
+                new ObjectMapper(),
+                Schedulers.boundedElastic());
         Conversation conversation = new Conversation();
         conversation.setConversationId("c1");
         conversation.setMessageCount(4);
         conversation.setSummary("{\"goal\":\"旧目标\",\"facts\":[\"旧事实\"],\"pending_tasks\":[]}");
         when(conversationRepository.requireOwned("u1", "c1")).thenReturn(conversation);
-        when(chatMessageRepository.sumTokenCountAfterWatermark(eq("c1"), eq("u1"), isNull())).thenReturn(10L);
-        when(chatMessageRepository.listOldestAfterWatermarkAsc(eq("c1"), eq("u1"), isNull(), eq(6)))
+        when(chatMessageRepository.countAfterWatermark(eq("c1"), eq("u1"), isNull(), isNull())).thenReturn(4L);
+        when(chatMessageRepository.sumTokenCountAfterWatermark(eq("c1"), eq("u1"), isNull(), isNull())).thenReturn(10L);
+        when(chatMessageRepository.listOldestAfterWatermarkAsc(eq("c1"), eq("u1"), isNull(), isNull(), eq(6)))
                 .thenReturn(List.of(
                         message("m1", "需要记住的旧事实甲"),
                         message("m2", "需要记住的旧事实乙"),
@@ -126,6 +131,44 @@ class LlmSummaryOrchestratorTest {
         assertTrue(json.contains("模型事实"), json);
         assertTrue(json.contains("待办"), json);
         assertFalse(json.contains("需要记住的旧事实甲"), json);
+    }
+
+    /**
+     * P0：LLM 摘要四字段必须与规则路径同口径限流（facts≤20 / decisions≤10），并去重，防滚动合并递归膨胀。
+     */
+    @Test
+    void llmSuccess_capsSummaryFields() throws Exception {
+        StringBuilder facts = new StringBuilder();
+        for (int i = 1; i <= 25; i++) {
+            if (i > 1) {
+                facts.append(',');
+            }
+            facts.append("\"f").append(i).append('"');
+        }
+        facts.append(",\"f1\""); // 重复项应被去重
+        StringBuilder decisions = new StringBuilder();
+        for (int i = 1; i <= 12; i++) {
+            if (i > 1) {
+                decisions.append(',');
+            }
+            decisions.append("\"d").append(i).append('"');
+        }
+        String modelJson = "{\"goal\":\"g\",\"facts\":[" + facts + "],\"decisions\":[" + decisions
+                + "],\"pending_tasks\":[]}";
+        when(modelRouter.callContent(anyList(), any()))
+                .thenReturn(new ModelRouter.RoutedResult<>(modelJson, null));
+
+        orchestrator.compress("u1", "c1");
+
+        JsonNode root = new ObjectMapper().readTree(capturedSummary());
+        JsonNode factsNode = root.get("facts");
+        assertEquals(20, factsNode.size());
+        assertEquals("f6", factsNode.get(0).asText());
+        assertEquals("f25", factsNode.get(19).asText());
+        JsonNode decisionsNode = root.get("decisions");
+        assertEquals(10, decisionsNode.size());
+        assertEquals("d3", decisionsNode.get(0).asText());
+        assertEquals("d12", decisionsNode.get(9).asText());
     }
 
     private String capturedSummary() {
